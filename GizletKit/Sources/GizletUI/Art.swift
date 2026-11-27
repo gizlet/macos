@@ -55,13 +55,15 @@ struct Lift: ViewModifier {
 
 /// A round avatar with a profile's initials on a color of its own.
 struct Avatar: View {
+    @Environment(\.l) private var l
     var profile: Profile
     var size: CGFloat = 32
 
     var body: some View {
         let hue = Double(profile.id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
-        let words = profile.label.split(separator: " ")
-        let initials = words.count > 1 ? String(words[0].prefix(1) + words[1].prefix(1)) : String(profile.label.prefix(2))
+        let name = l.name(of: profile)
+        let words = name.split(separator: " ")
+        let initials = words.count > 1 ? String(words[0].prefix(1) + words[1].prefix(1)) : String(name.prefix(2))
         ZStack {
             Circle().fill(LinearGradient(colors: [Color(hue: hue, saturation: 0.55, brightness: 0.75), Color(hue: hue, saturation: 0.7, brightness: 0.5)],
                                          startPoint: .top, endPoint: .bottom))

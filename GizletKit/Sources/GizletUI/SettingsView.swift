@@ -34,7 +34,7 @@ struct SettingsView: View {
                 ForEach(model.profileList) { profile in
                     HStack {
                         Image(systemName: profile.id == model.profile.id ? "person.crop.circle.fill" : "person.crop.circle").foregroundStyle(.tint)
-                        Text(profile.label)
+                        Text(l.name(of: profile))
                         if profile.id == model.profile.id { Text(l("In use", "使用中")).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
                         if profile.id != model.profile.id {
@@ -48,7 +48,7 @@ struct SettingsView: View {
                             Image(systemName: "ellipsis.circle")
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                        .accessibilityLabel(l("More for \(profile.label)", "\(profile.label) 的更多操作"))
+                        .accessibilityLabel(l("More for \(l.name(of: profile))", "\(l.name(of: profile)) 的更多操作"))
                     }
                 }
                 Button(l("New Profile…", "新建 Profile…")) { naming = NamingRequest(profile: nil, name: "") }
@@ -74,7 +74,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle(l("Settings", "设置"))
         .sheet(item: $naming) { request in ProfileNameSheet(request: request) }
-        .confirmationDialog(l("Delete \(deleting?.label ?? "")?", "删除\(deleting?.label ?? "")？"),
+        .confirmationDialog(l("Delete \(deleting.map { l.name(of: $0) } ?? "")?", "删除\(deleting.map { l.name(of: $0) } ?? "")？"),
                             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { profile in
             Button(l("Delete Profile", "删除 Profile"), role: .destructive) { model.deleteProfile(profile.id) }
         } message: { _ in
@@ -127,6 +127,8 @@ struct UpdateSettings: View {
                 switch updates.state {
                 case .idle, .checking:
                     Text(l("Checking for updates…", "正在检查更新…"))
+                case .noRelease:
+                    Text(l("Gizlet \(updates.currentVersion); no newer version is published", "Gizlet \(updates.currentVersion)，还没有发布新版本"))
                 case .upToDate:
                     Text(l("Gizlet \(updates.currentVersion) is up to date", "Gizlet \(updates.currentVersion) 已是最新版本"))
                 case .available(let release):

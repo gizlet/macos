@@ -66,7 +66,7 @@ public final class AppModel {
             profile = try profiles.current()
         } catch {
             profile = Profile(id: String(repeating: "0", count: 16), name: "", created: 0)
-            notice = Notice(title: "Gizlet", message: error.localizedDescription)
+            notice = Notice(title: "Gizlet", message: l.describe(error))
         }
         if let page = ProcessInfo.processInfo.environment["GIZLET_PAGE"].flatMap(Page.init(rawValue:)) { section = page }
         loadProfile()
@@ -109,7 +109,7 @@ public final class AppModel {
 
     func report(_ error: Error, _ title: String) {
         if error is CancellationError { return }
-        notice = Notice(title: title, message: error.localizedDescription)
+        notice = Notice(title: title, message: l.describe(error))
     }
 
     // MARK: Settings

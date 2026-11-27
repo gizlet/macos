@@ -124,7 +124,7 @@ struct ProfileButton: View {
                     Button {
                         model.switchProfile(profile.id)
                     } label: {
-                        if profile.id == model.profile.id { Label(profile.label, systemImage: "checkmark") } else { Text(profile.label) }
+                        if profile.id == model.profile.id { Label(l.name(of: profile), systemImage: "checkmark") } else { Text(l.name(of: profile)) }
                     }
                 }
             }
@@ -134,7 +134,7 @@ struct ProfileButton: View {
             HStack(spacing: 10) {
                 Avatar(profile: model.profile, size: 34)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.profile.label).font(.headline).lineLimit(1)
+                    Text(l.name(of: model.profile)).font(.headline).lineLimit(1)
                     Text(l("Profile", "Profile")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -148,7 +148,7 @@ struct ProfileButton: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .help(l("Switch profile or open Settings", "切换 Profile 或打开设置"))
-        .accessibilityLabel(l("Profile: \(model.profile.label)", "Profile：\(model.profile.label)"))
+        .accessibilityLabel(l("Profile: \(l.name(of: model.profile))", "Profile：\(l.name(of: model.profile))"))
     }
 }
 

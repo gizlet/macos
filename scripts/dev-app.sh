@@ -14,12 +14,17 @@ app="${root}/build/dev/Gizlet Dev.app"
 rm -rf "${app}"
 mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
 cp "${binary}" "${app}/Contents/MacOS/Gizlet"
+iconset=$(mktemp -d)/Gizlet.iconset
+mkdir -p "${iconset}"
+cp "${root}"/App/Resources/Assets.xcassets/AppIcon.appiconset/icon_*.png "${iconset}/"
+iconutil -c icns -o "${app}/Contents/Resources/Gizlet.icns" "${iconset}"
 cat > "${app}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>Gizlet</string>
+  <key>CFBundleIconFile</key><string>Gizlet</string>
   <key>CFBundleIdentifier</key><string>io.gizlet.macos.dev</string>
   <key>CFBundleName</key><string>Gizlet Dev</string>
   <key>CFBundlePackageType</key><string>APPL</string>

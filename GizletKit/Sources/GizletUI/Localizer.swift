@@ -27,6 +27,11 @@ public struct Localizer: Equatable, Sendable {
         self.chinese ? chinese : english
     }
 
+    /// A profile's name; the first one, with none, is "Default" in the interface language.
+    public func name(of profile: Profile) -> String {
+        profile.name.isEmpty ? self("Default", "默认") : profile.name
+    }
+
     public func bytes(_ count: UInt64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .decimal

@@ -11,7 +11,7 @@ struct LibraryView: View {
 
     var body: some View {
         @Bindable var model = model
-        PageScroll(title: l("Library", "游戏库"), subtitle: l("\(model.profile.label)'s games and apps", "\(model.profile.label) 的游戏和应用")) {
+        PageScroll(title: l("Library", "游戏库"), subtitle: l("\(l.name(of: model.profile))'s games and apps", "\(l.name(of: model.profile)) 的游戏和应用")) {
             Picker(l("Show", "显示"), selection: $model.showFavoritesOnly) {
                 Text(l("All", "全部")).tag(false)
                 Text(l("Favorites", "收藏")).tag(true)

@@ -60,7 +60,7 @@ public final class StoreModel {
                 shelves[.apps] = loaded.2
                 error = nil
             } catch {
-                self.error = error.localizedDescription
+                self.error = app.l.describe(error)
             }
             await app.checkAppUpdates()
         }
@@ -86,7 +86,7 @@ public final class StoreModel {
                 results = found
                 error = nil
             } catch {
-                if !Task.isCancelled { self.error = error.localizedDescription }
+                if !Task.isCancelled { self.error = app.l.describe(error) }
             }
         }
     }
@@ -96,7 +96,7 @@ public final class StoreModel {
             details[repo] = try await client.detail(repo)
         } catch is CancellationError {
         } catch {
-            self.error = error.localizedDescription
+            self.error = app.l.describe(error)
         }
     }
 

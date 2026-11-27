@@ -14,6 +14,8 @@ public final class UpdateModel {
         case idle
         case checking
         case upToDate
+        /// Nothing is published yet.
+        case noRelease
         case available(LauncherRelease)
         case downloading(LauncherRelease, Double)
         case waitingForFlash(LauncherRelease)
@@ -84,15 +86,18 @@ public final class UpdateModel {
                 state = .available(release)
                 if dismissed != release.version { prompt = release }
             }
+        } catch UpdateError.noRelease {
+            lastChecked = Date()
+            state = .noRelease
         } catch {
             lastChecked = Date()
             // A background check that fails keeps what an earlier one found.
             if manual {
-                state = .failed(error.localizedDescription)
+                state = .failed(app.l.describe(error))
             } else if case .available = previous {
                 state = previous
             } else {
-                state = .failed(error.localizedDescription)
+                state = .failed(app.l.describe(error))
             }
         }
     }
@@ -121,7 +126,7 @@ public final class UpdateModel {
             self.staged = staged
             finishWhenIdle()
         } catch {
-            state = .failed(error.localizedDescription)
+            state = .failed(app.l.describe(error))
         }
     }
 
@@ -143,7 +148,7 @@ public final class UpdateModel {
             NSApp.terminate(nil)
         } catch {
             self.staged = nil
-            state = .failed(error.localizedDescription)
+            state = .failed(app.l.describe(error))
         }
     }
 

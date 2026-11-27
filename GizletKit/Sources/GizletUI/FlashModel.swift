@@ -79,7 +79,7 @@ public final class FlashModel {
             release = try await OSReleaseFeed().latest()
             releaseError = nil
         } catch {
-            releaseError = error.localizedDescription
+            releaseError = app.l.describe(error)
         }
     }
 
@@ -152,7 +152,7 @@ public final class FlashModel {
             guard prepared != nil else { return }
         }
         guard monitor.describe(identity.bsdName)?.identity == identity else {
-            step = .failed(FlashError.cardChanged.localizedDescription)
+            step = .failed(app.l.describe(FlashError.cardChanged))
             return
         }
         typedName = ""
@@ -183,7 +183,7 @@ public final class FlashModel {
             prepared = image
             step = .idle
         } catch {
-            step = .failed(error.localizedDescription)
+            step = .failed(app.l.describe(error))
         }
     }
 
@@ -245,7 +245,7 @@ public final class FlashModel {
             if monitor.describe(bsdName)?.identity == identity { try? await monitor.eject(bsdName) }
             step = .done(disk.displayName)
         } catch {
-            step = .failed(error.localizedDescription)
+            step = .failed(app.l.describe(error))
         }
         writer = nil
     }

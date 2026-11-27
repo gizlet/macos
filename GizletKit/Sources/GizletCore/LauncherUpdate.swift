@@ -37,6 +37,8 @@ struct UpdateEnvelope: Codable {
 
 public enum UpdateError: Error, LocalizedError, Equatable {
     case feed(String)
+    /// The feed has no manifest: nothing is published yet.
+    case noRelease
     case notNewer
     case incompatible(String)
     case notInstallable(String)
@@ -45,6 +47,7 @@ public enum UpdateError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .feed(let message): "Cannot check for updates: \(message)"
+        case .noRelease: "No version is published yet"
         case .notNewer: "This version is up to date"
         case .incompatible(let minimum): "The new version needs macOS \(minimum) or later"
         case .notInstallable(let message): message
@@ -90,6 +93,7 @@ public struct UpdateFeed: Sendable {
             throw UpdateError.feed(error.localizedDescription)
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 { throw UpdateError.noRelease }
         guard status == 200 else { throw UpdateError.feed("HTTP \(status)") }
         guard data.count <= 64 << 10 else { throw UpdateError.feed("the manifest is too large") }
         return try parse(data)
