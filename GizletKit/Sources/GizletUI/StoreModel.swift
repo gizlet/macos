@@ -23,6 +23,9 @@ public final class StoreModel {
     /// Gizlet pages opened from any Store page.
     public var path: [StoreSummary] = []
     public private(set) var details: [String: StoreDetail] = [:]
+    /// Why the last search or a gizlet's page could not load.
+    public private(set) var searchError: String?
+    public private(set) var detailErrors: [String: String] = [:]
     public private(set) var installing: [String: Double] = [:]
     private var searchTask: Task<Void, Never>?
 
@@ -69,8 +72,13 @@ public final class StoreModel {
         loadTask = nil
     }
 
+    public func retrySearch() {
+        queryChanged()
+    }
+
     private func queryChanged() {
         searchTask?.cancel()
+        searchError = nil
         let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else {
             results = nil
@@ -84,19 +92,21 @@ public final class StoreModel {
                 let found = try await client.search(words)
                 guard !Task.isCancelled else { return }
                 results = found
-                error = nil
+                searchError = nil
+            } catch is CancellationError {
             } catch {
-                if !Task.isCancelled { self.error = app.l.describe(error) }
+                if !Task.isCancelled { searchError = app.l.describe(error) }
             }
         }
     }
 
     public func detail(_ repo: String) async {
         do {
+            detailErrors[repo] = nil
             details[repo] = try await client.detail(repo)
         } catch is CancellationError {
         } catch {
-            self.error = app.l.describe(error)
+            detailErrors[repo] = app.l.describe(error)
         }
     }
 

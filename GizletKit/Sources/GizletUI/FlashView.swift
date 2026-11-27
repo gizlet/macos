@@ -70,13 +70,13 @@ struct FlashView: View {
             }
         }
         .alert(confirmTitle, isPresented: Binding(get: { flash.confirming != nil }, set: { if !$0 { flash.confirming = nil } })) {
-            if flash.selectedDisk?.isUnusuallyLarge == true {
+            if flash.confirming?.isUnusuallyLarge == true {
                 TextField(flash.confirming?.bsdName ?? "", text: $flash.typedName)
             }
             Button(l("Erase and Write", "清空并写入"), role: .destructive) {
-                if let identity = flash.confirming { Task { await flash.write(confirmed: identity) } }
+                if let disk = flash.confirming { Task { await flash.write(confirmed: disk.identity) } }
             }
-            .disabled(flash.selectedDisk?.isUnusuallyLarge == true && flash.typedName != flash.confirming?.bsdName)
+            .disabled(flash.confirming?.isUnusuallyLarge == true && flash.typedName != flash.confirming?.bsdName)
             Button(l("Cancel", "取消"), role: .cancel) { flash.confirming = nil }
         } message: {
             Text(confirmMessage)
@@ -84,11 +84,11 @@ struct FlashView: View {
     }
 
     private var confirmTitle: String {
-        l("Erase \(model.flashModel.selectedDisk?.displayName ?? "")?", "清空\(model.flashModel.selectedDisk?.displayName ?? "")？")
+        l("Erase \(model.flashModel.confirming?.displayName ?? "")?", "清空\(model.flashModel.confirming?.displayName ?? "")？")
     }
 
     private var confirmMessage: String {
-        guard let disk = model.flashModel.selectedDisk else { return "" }
+        guard let disk = model.flashModel.confirming else { return "" }
         let volumes = disk.volumeNames.isEmpty ? "" : l(" (\(disk.volumeNames.joined(separator: ", ")))", "（\(disk.volumeNames.joined(separator: "、"))）")
         var text = l("Everything on \(disk.bsdName), \(l.bytes(disk.size))\(volumes), is erased and cannot be recovered. macOS asks for an administrator password to write it.",
                      "\(disk.bsdName)（\(l.bytes(disk.size))）\(volumes)上的所有数据都会被清除，无法恢复。写入时 macOS 会要求输入管理员密码。")

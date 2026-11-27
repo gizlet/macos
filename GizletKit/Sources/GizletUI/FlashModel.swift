@@ -46,7 +46,8 @@ public final class FlashModel {
     /// The panel to configure; nil keeps the image's own setting (local images only).
     public var panelChoice: R36SPanel?
     /// The card the confirmation dialog is asking about; cleared when it changes.
-    public var confirming: DiskIdentity?
+    /// The card the confirmation dialog names, as it was when the user asked to write it.
+    public var confirming: DiskInfo?
     public var typedName = ""
     private var writer: CardWriter?
     private var started = false
@@ -119,7 +120,7 @@ public final class FlashModel {
                 panels.removeValue(forKey: disk.bsdName)
             }
         }
-        if let confirming, monitor.describe(confirming.bsdName)?.identity != confirming {
+        if let confirming, monitor.describe(confirming.bsdName)?.identity != confirming.identity {
             self.confirming = nil
         }
         if selection == nil, let first = listedDisks.first(where: { problem($0) == nil }) {
@@ -148,21 +149,25 @@ public final class FlashModel {
         guard let disk = selectedDisk, problem(disk) == nil, !isBusy else { return }
         let identity = disk.identity
         if prepared == nil {
+            // Busy from here on, so the card cannot be changed while the image is prepared.
+            step = .preparing(.downloading, nil)
             await prepare()
             guard prepared != nil else { return }
         }
-        guard monitor.describe(identity.bsdName)?.identity == identity else {
+        // The dialog names the card chosen when Write was pressed, and only if it is still there.
+        guard selection == identity.bsdName, let current = monitor.describe(identity.bsdName), current.identity == identity else {
             step = .failed(app.l.describe(FlashError.cardChanged))
             return
         }
         typedName = ""
-        confirming = identity
+        confirming = current
     }
 
     public func prepare() async {
         let imageSource: ImageSource
         switch source {
         case .latest:
+            step = .preparing(.downloading, nil)
             if release == nil { await loadRelease() }
             guard let release else {
                 step = .failed(releaseError ?? app.l("The latest release cannot be found", "找不到最新版本"))
@@ -258,8 +263,6 @@ public final class FlashModel {
         if !isBusy { step = .idle }
     }
 
-    /// Selects the panel on the written card: copies its overlay to `mipi-panel.dtbo`
-    /// on the FAT boot partition once macOS has found the new partitions.
     /// Selects the chosen panel on the written card's FAT boot partition, once
     /// macOS has found the new partitions: Panel 4's overlay copied to
     /// `mipi-panel.dtbo`, or for Panel 0, which the device tree itself

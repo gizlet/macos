@@ -126,6 +126,10 @@ struct SearchResultsView: View {
                 } else {
                     ListGrid(items: results)
                 }
+            } else if let error = store.searchError {
+                EmptyState(symbol: "wifi.exclamationmark", title: l("Search failed", "搜索失败"), message: error) {
+                    Button(l("Try Again", "重试")) { store.retrySearch() }
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
@@ -485,6 +489,11 @@ struct StoreDetailView: View {
                     }
                     if let share = summary.shareURL {
                         Link(l("View on gizlet.io", "在 gizlet.io 上查看"), destination: share)
+                    }
+                } else if let error = model.storeModel.detailErrors[summary.repo] {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(error, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                        Button(l("Try Again", "重试")) { Task { await model.storeModel.detail(summary.repo) } }
                     }
                 } else {
                     ProgressView()
