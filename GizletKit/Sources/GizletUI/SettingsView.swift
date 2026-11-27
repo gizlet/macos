@@ -136,6 +136,8 @@ struct UpdateSettings: View {
                     ProgressView(value: fraction).frame(maxWidth: 240)
                 case .waitingForFlash(let release):
                     Text(l("\(release.version) installs when the card is written", "\(release.version) 将在写卡完成后安装"))
+                case .waitingForApps(let release):
+                    Text(l("\(release.version) installs when the open games are quit", "\(release.version) 将在退出正在运行的游戏后安装"))
                 case .installing(let release):
                     Text(l("Installing \(release.version)…", "正在安装 \(release.version)…"))
                 case .failed(let message):

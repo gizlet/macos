@@ -42,8 +42,10 @@ jobs:
   publish:
     name: Build, notarize and publish (macOS)
     needs: verify
-    # The self-hosted Mac that the RUNNERS organization variable maps to macos-arm64.
-    runs-on: ${{ fromJSON(vars.RUNNERS || '{}')['macos-arm64'] || 'macos-26' }}
+    # Signing runs where pull-request code never ran: a runner kept for releases
+    # (RUNNERS['macos-arm64-release']), or else GitHub's macos-26, a fresh VM
+    # for each job. Never the macos-arm64 runner that builds pull requests.
+    runs-on: ${{ fromJSON(vars.RUNNERS || '{}')['macos-arm64-release'] || 'macos-26' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

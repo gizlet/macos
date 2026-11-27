@@ -119,7 +119,7 @@ public final class StoreModel {
         defer { installing.removeValue(forKey: summary.repo) }
         let repo = summary.repo
         do {
-            _ = try await app.storeInstall(repo) { done, total in
+            _ = try await app.storeInstall(repo, appID: summary.appID) { done, total in
                 Task { @MainActor [weak self] in
                     if let total, total > 0, self?.installing[repo] != nil { self?.installing[repo] = Double(done) / Double(total) }
                 }

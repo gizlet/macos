@@ -17,44 +17,53 @@ import Testing
         #expect(throws: SignatureError.untrustedSigner) { try otherKey.verify(manifest, armored: signature) }
     }
 
-    @Test func readsTheOSReleaseImage() throws {
-        let feed = try OSReleaseFeed()
-        let release = try feed.parse(manifest: try fixture("os-v0.4.4-manifest.json"),
-                                     signature: String(decoding: try fixture("os-v0.4.4-manifest.json.sig"), as: UTF8.self),
-                                     base: URL(string: "https://dl.gizlet.io/releases/v0.4.4/")!)
-        #expect(release.tag == "v0.4.4")
-        #expect(release.image.absoluteString == "https://dl.gizlet.io/releases/v0.4.4/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")
-        #expect(release.checksums.lastPathComponent == "SHA256SUMS")
+    /// An OS release manifest like the R36S's, with the image digest a release now signs.
+    static func osManifest(tag: String = "v0.4.6", sha256: String? = String(repeating: "c", count: 64), bytes: UInt64 = 1234) -> Data {
+        let digest = sha256.map { #", "sha256": "\#($0)", "bytes": \#(bytes)"# } ?? ""
+        return Data(#"{"schema_version": 1, "tag": "\#(tag)", "boards": {"gameconsole": {"r36s": {"image": {"path": "boards/gameconsole/r36s/gizlet-os-r36s.img.gz", "checksum": "boards/gameconsole/r36s/SHA256SUMS"\#(digest)}}}}}"#.utf8)
+    }
+
+    @Test func readsTheSignedImageDigest() throws {
+        let manifest = Self.osManifest()
+        let (key, signature) = try sshSign(manifest, namespace: TrustedKeys.osReleaseNamespace)
+        let feed = try OSReleaseFeed(key: key)
+        let release = try feed.parse(manifest: manifest, signature: signature, base: URL(string: "https://gizlet.io/assets/releases/v0.4.6/")!)
+        #expect(release.image.absoluteString == "https://gizlet.io/assets/releases/v0.4.6/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")
+        #expect(release.sha256 == String(repeating: "c", count: 64))
+        #expect(release.bytes == 1234)
+        // Another version's folder.
+        #expect(throws: FlashError.self) { try feed.parse(manifest: manifest, signature: signature, base: URL(string: "https://gizlet.io/assets/releases/v0.4.5/")!) }
+        // A manifest that does not sign the image's digest: SHA256SUMS alone is not trusted.
+        let unsigned = Self.osManifest(sha256: nil)
+        let (otherKey, otherSignature) = try sshSign(unsigned, namespace: TrustedKeys.osReleaseNamespace)
+        #expect(throws: FlashError.self) { try OSReleaseFeed(key: otherKey).parse(manifest: unsigned, signature: otherSignature, base: URL(string: "https://gizlet.io/assets/releases/v0.4.6/")!) }
+    }
+
+    @Test func refusesAReleaseWithoutASignedImageDigest() throws {
+        // v0.4.4 signs its manifest but lists the image's checksum only in SHA256SUMS.
         #expect(throws: FlashError.self) {
-            try feed.parse(manifest: try fixture("os-v0.4.4-manifest.json"),
-                           signature: String(decoding: try fixture("os-v0.4.4-manifest.json.sig"), as: UTF8.self),
-                           base: URL(string: "https://dl.gizlet.io/releases/v0.4.3/")!)
+            try OSReleaseFeed().parse(manifest: try fixture("os-v0.4.4-manifest.json"),
+                                      signature: String(decoding: try fixture("os-v0.4.4-manifest.json.sig"), as: UTF8.self),
+                                      base: URL(string: "https://gizlet.io/assets/releases/v0.4.4/")!)
         }
     }
 
-    @Test func readsChecksumFiles() {
-        let sum = String(repeating: "ab", count: 32)
-        #expect(checksum(in: "\(sum)  gizlet-os-r36s.img.gz\n", for: "gizlet-os-r36s.img.gz") == sum)
-        #expect(checksum(in: "\(sum) *gizlet-os-r36s.img.gz\n", for: "gizlet-os-r36s.img.gz") == sum)
-        #expect(checksum(in: "\(sum)  other.img.gz\n", for: "gizlet-os-r36s.img.gz") == nil)
-    }
-
     @Test func discoversTheLatestReleaseThroughTheAPI() async throws {
-        let manifest = try fixture("os-v0.4.4-manifest.json")
-        let signature = try fixture("os-v0.4.4-manifest.json.sig")
+        let manifest = Self.osManifest()
+        let (key, signature) = try sshSign(manifest, namespace: TrustedKeys.osReleaseNamespace)
         let api = "https://os.test/api/v1/os/releases/latest"
-        let assets = "https://os.test/assets/releases/v0.4.4/manifest.json"
+        let assets = "https://os.test/assets/releases/v0.4.6/manifest.json"
         let session = StubProtocol.session([
             assets: .init(status: 200, body: manifest),
-            assets + ".sig": .init(status: 200, body: signature),
-            api: .init(status: 200, body: Data(#"{"tag": "v0.4.4", "manifest_url": "\#(assets)", "signature_url": "\#(assets).sig"}"#.utf8)),
+            assets + ".sig": .init(status: 200, body: Data(signature.utf8)),
+            api: .init(status: 200, body: Data(#"{"tag": "v0.4.6", "manifest_url": "\#(assets)", "signature_url": "\#(assets).sig"}"#.utf8)),
         ])
-        let feed = try OSReleaseFeed(latestURL: URL(string: api)!, session: session)
+        let feed = try OSReleaseFeed(latestURL: URL(string: api)!, key: key, session: session)
         let release = try await feed.latest()
-        #expect(release.image.absoluteString == "https://os.test/assets/releases/v0.4.4/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")
+        #expect(release.image.absoluteString == "https://os.test/assets/releases/v0.4.6/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")
 
-        let elsewhere = "https://evil.test/assets/releases/v0.4.4/manifest.json"
-        StubProtocol.responses[api] = .init(status: 200, body: Data(#"{"tag": "v0.4.4", "manifest_url": "\#(elsewhere)", "signature_url": "\#(elsewhere).sig"}"#.utf8))
+        let elsewhere = "https://evil.test/assets/releases/v0.4.6/manifest.json"
+        StubProtocol.responses[api] = .init(status: 200, body: Data(#"{"tag": "v0.4.6", "manifest_url": "\#(elsewhere)", "signature_url": "\#(elsewhere).sig"}"#.utf8))
         await #expect(throws: FlashError.self) { try await feed.latest() }
     }
 

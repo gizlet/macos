@@ -238,9 +238,9 @@ public final class FlashModel {
             close(descriptor)
             descriptor = -1
             monitor.setMountsBlocked(false, for: bsdName)
-            if let panel, let overlay = panel.overlay {
+            if let panel {
                 step = .configuring
-                try await configure(bsdName, overlay: overlay)
+                try await configure(bsdName, panel: panel)
             }
             try? await monitor.eject(bsdName)
             step = .done(disk.displayName)
@@ -260,19 +260,30 @@ public final class FlashModel {
 
     /// Selects the panel on the written card: copies its overlay to `mipi-panel.dtbo`
     /// on the FAT boot partition once macOS has found the new partitions.
-    private func configure(_ bsdName: String, overlay: String) async throws {
+    /// Selects the chosen panel on the written card's FAT boot partition, once
+    /// macOS has found the new partitions: Panel 4's overlay copied to
+    /// `mipi-panel.dtbo`, or for Panel 0, which the device tree itself
+    /// describes, no `mipi-panel.dtbo` at all.
+    private func configure(_ bsdName: String, panel: R36SPanel) async throws {
         let partition = bsdName + "s1"
-        let failure = FlashError.write(app.l("The card is written, but its display could not be set up. Copy \(overlay) to mipi-panel.dtbo on GIZLETBOOT.",
+        let failure: FlashError
+        if let overlay = panel.overlay {
+            failure = FlashError.write(app.l("The card is written, but its display could not be set up. Copy \(overlay) to mipi-panel.dtbo on GIZLETBOOT.",
                                              "已写卡，但无法配置屏幕。请在 GIZLETBOOT 上把 \(overlay) 复制为 mipi-panel.dtbo。"))
+        } else {
+            failure = FlashError.write(app.l("The card is written, but its display could not be set up. Delete mipi-panel.dtbo on GIZLETBOOT.",
+                                             "已写卡，但无法配置屏幕。请删除 GIZLETBOOT 上的 mipi-panel.dtbo。"))
+        }
         for _ in 0..<30 {
             if let volume = monitor.describe(bsdName)?.volumes.first(where: { $0.bsdName == partition }) {
                 if volume.name != "GIZLETBOOT" { throw failure }
                 if volume.mountPoint == nil { try? await monitor.mount(partition) }
                 if let mount = monitor.describe(bsdName)?.volumes.first(where: { $0.bsdName == partition })?.mountPoint {
-                    let source = mount.appendingPathComponent(overlay)
-                    guard let data = FileManager.default.contents(atPath: source.path) else { throw failure }
-                    // Plain bytes, no extended attributes: FAT would keep those as ._ files.
-                    guard FileManager.default.createFile(atPath: mount.appendingPathComponent("mipi-panel.dtbo").path, contents: data) else { throw failure }
+                    do {
+                        try PanelDetector.select(panel, onBootVolume: mount)
+                    } catch {
+                        throw failure
+                    }
                     sync()
                     return
                 }

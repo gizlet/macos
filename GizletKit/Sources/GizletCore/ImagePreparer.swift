@@ -24,8 +24,8 @@ public enum PreparePhase: Equatable, Sendable {
     case unpacking
 }
 
-/// Downloads a release image (checking it against the release's `SHA256SUMS`)
-/// or reads a local `.img` or `.img.gz`, and unpacks gzip before the card is
+/// Downloads a release image (checking its size and SHA-256 against the signed
+/// manifest) or reads a local `.img` or `.img.gz`, and unpacks gzip before the card is
 /// touched: a raw disk takes whole sectors, and a corrupt image is caught first.
 public struct ImagePreparer: Sendable {
     public var cache: URL
@@ -41,22 +41,17 @@ public struct ImagePreparer: Sendable {
         try fm.ensureDirectory(cache)
         switch source {
         case .release(let release):
-            let (sums, response) = try await session.data(for: URLRequest(url: release.checksums, cachePolicy: .reloadIgnoringLocalCacheData))
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let expected = checksum(in: String(decoding: sums, as: UTF8.self), for: release.fileName) else {
-                throw FlashError.release("SHA256SUMS does not list \(release.fileName)")
-            }
             let folder = cache.appendingPathComponent(release.tag, isDirectory: true)
             for name in (try? fm.contentsOfDirectory(atPath: cache.path)) ?? [] where name != release.tag {
                 try? fm.removeItem(at: cache.appendingPathComponent(name))
             }
             let download = folder.appendingPathComponent(release.fileName)
             do {
-                try await Downloader(session: session).download(release.image, to: download, size: nil, sha256: expected, limit: 4 << 30) { done, total in
+                try await Downloader(session: session).download(release.image, to: download, size: release.bytes, sha256: release.sha256) { done, total in
                     progress(.downloading, done, total)
                 }
-            } catch DownloadError.checksumMismatch {
-                throw FlashError.image("The downloaded image is corrupt (SHA-256 mismatch); try again")
+            } catch let error as DownloadError where error == .checksumMismatch || error == .sizeMismatch {
+                throw FlashError.image("The downloaded image does not match its signed checksum; try again")
             }
             var image = try await unpack(download, into: folder, progress: progress)
             image.releaseTag = release.tag

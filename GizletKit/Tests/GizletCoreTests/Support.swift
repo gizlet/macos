@@ -147,6 +147,8 @@ final class StubProtocol: URLProtocol {
 
     nonisolated(unsafe) static var responses: [String: Response] = [:]
     nonisolated(unsafe) static var requests: [URLRequest] = []
+    /// Runs before the answer to a URL is sent, as something happening during a download.
+    nonisolated(unsafe) static var onLoad: [String: () -> Void] = [:]
     static let lock = NSLock()
 
     static func session(_ responses: [String: Response]) -> URLSession {
@@ -166,7 +168,9 @@ final class StubProtocol: URLProtocol {
         Self.requests.append(request)
         let key = request.url!.absoluteString
         let stub = Self.responses[key] ?? Self.responses[key.components(separatedBy: "?")[0]]
+        let hook = Self.onLoad.removeValue(forKey: key)
         Self.lock.unlock()
+        hook?()
         guard let stub else {
             client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
             return

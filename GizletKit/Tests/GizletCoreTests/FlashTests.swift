@@ -57,20 +57,20 @@ import Testing
         #expect(!prepared.isGizletR36S)
     }
 
-    @Test func downloadsAReleaseImageAgainstItsChecksums() async throws {
+    @Test func downloadsAReleaseImageAgainstItsSignedDigest() async throws {
         let directory = try temporaryDirectory()
         let gz = try runTool("/usr/bin/gzip", ["-c"], input: image(1 << 20))
-        let release = OSImageRelease(tag: "v9.9.9", image: URL(string: "https://dl.test/releases/v9.9.9/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")!,
-                                     checksums: URL(string: "https://dl.test/releases/v9.9.9/boards/gameconsole/r36s/SHA256SUMS")!)
-        let session = StubProtocol.session([
-            release.image.absoluteString: .init(status: 200, body: gz),
-            release.checksums.absoluteString: .init(status: 200, body: Data("\(sha256(of: gz))  gizlet-os-r36s.img.gz\n".utf8)),
-        ])
+        let url = URL(string: "https://dl.test/releases/v9.9.9/boards/gameconsole/r36s/gizlet-os-r36s.img.gz")!
+        let session = StubProtocol.session([url.absoluteString: .init(status: 200, body: gz)])
+        let release = OSImageRelease(tag: "v9.9.9", image: url, sha256: sha256(of: gz), bytes: UInt64(gz.count))
         let prepared = try await ImagePreparer(cache: directory, session: session).prepare(.release(release)) { _, _, _ in }
         #expect(prepared.releaseTag == "v9.9.9")
         #expect(prepared.size == 1 << 20)
 
-        StubProtocol.responses[release.checksums.absoluteString] = .init(status: 200, body: Data("\(String(repeating: "0", count: 64))  gizlet-os-r36s.img.gz\n".utf8))
+        // The server sends other bytes than the release signed.
+        var tampered = gz
+        tampered[tampered.count / 2] ^= 0x55
+        StubProtocol.responses[url.absoluteString] = .init(status: 200, body: tampered)
         try FileManager.default.removeItem(at: directory)
         await #expect(throws: FlashError.self) { try await ImagePreparer(cache: directory, session: session).prepare(.release(release)) { _, _, _ in } }
     }
@@ -108,6 +108,24 @@ import Testing
         #expect(PanelDetector.detect(bootVolume: boot, volumeName: "GIZLETBOOT") == PanelDetection(panel: .panel4, source: .gizletCard))
         try Data("custom".utf8).write(to: boot.appendingPathComponent("mipi-panel.dtbo"))
         #expect(PanelDetector.detect(bootVolume: boot, volumeName: "GIZLETBOOT") == nil)
+    }
+}
+
+@Suite struct PanelSelectionTests {
+    @Test func selectsEachPanelOnTheBootVolume() throws {
+        let boot = try temporaryDirectory()
+        try Data("panel 4".utf8).write(to: boot.appendingPathComponent("r36s-v30-panel4.dtbo"))
+        try PanelDetector.select(.panel4, onBootVolume: boot)
+        #expect(FileManager.default.contents(atPath: boot.appendingPathComponent("mipi-panel.dtbo").path) == Data("panel 4".utf8))
+        #expect(PanelDetector.detect(bootVolume: boot, volumeName: "GIZLETBOOT")?.panel == .panel4)
+        // Panel 0 is the device tree's own: no overlay may stay selected.
+        try PanelDetector.select(.panel0, onBootVolume: boot)
+        #expect(!FileManager.default.fileExists(atPath: boot.appendingPathComponent("mipi-panel.dtbo").path))
+        #expect(PanelDetector.detect(bootVolume: boot, volumeName: "GIZLETBOOT")?.panel == .panel0)
+        try PanelDetector.select(.panel0, onBootVolume: boot)
+        // A card without the overlay cannot be set to Panel 4.
+        try FileManager.default.removeItem(at: boot.appendingPathComponent("r36s-v30-panel4.dtbo"))
+        #expect(throws: FlashError.self) { try PanelDetector.select(.panel4, onBootVolume: boot) }
     }
 }
 

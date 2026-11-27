@@ -55,6 +55,24 @@ public enum PanelDetector {
         return found.map { PanelDetection(panel: $0, source: .stockFirmware) }
     }
 
+    /// Makes a Gizlet OS boot volume select `panel`: Panel 4's overlay copied
+    /// to `mipi-panel.dtbo` (as plain bytes: FAT would keep extended attributes
+    /// as `._` files), or for Panel 0 any `mipi-panel.dtbo` removed.
+    public static func select(_ panel: R36SPanel, onBootVolume volume: URL) throws {
+        let fm = FileManager.default
+        let selected = volume.appendingPathComponent("mipi-panel.dtbo")
+        guard let overlay = panel.overlay else {
+            if fm.fileExists(atPath: selected.path) { try fm.removeItem(at: selected) }
+            return
+        }
+        guard let data = fm.contents(atPath: volume.appendingPathComponent(overlay).path) else {
+            throw FlashError.write("The card has no \(overlay)")
+        }
+        guard fm.createFile(atPath: selected.path, contents: data) else {
+            throw FlashError.write("Cannot write mipi-panel.dtbo")
+        }
+    }
+
     /// The files `boot.ini` loads at `${dtb_loadaddr}`: `load mmc 1:1 ${dtb_loadaddr} NAME`.
     static func dtbNames(in bootINI: String) -> [String] {
         bootINI.split(whereSeparator: \.isNewline).compactMap { line in

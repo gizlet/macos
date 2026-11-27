@@ -36,7 +36,11 @@ public final class AppModel {
     public private(set) var profileList: [Profile] = []
     public private(set) var profile: Profile
     public private(set) var settings = ProfileSettings()
-    public private(set) var running: [String: Process] = [:]
+    /// The apps running now, from this run of the Launcher or an earlier one.
+    public private(set) var runningIDs: Set<String> = []
+    let runningApps: RunningApps
+    private var processes: [String: Process] = [:]
+    private var runningWatch: Timer?
     public private(set) var appUpdates: [String: StoreUpdateStatus] = [:]
     public private(set) var busyApps: Set<String> = []
     public var notice: Notice?
@@ -55,6 +59,7 @@ public final class AppModel {
         library = AppLibrary(root: root, platform: platform)
         profiles = Profiles(root: root)
         store = StoreInstaller(library: library, client: .standard())
+        runningApps = RunningApps(root: root)
         library.sweep()
         profiles.sweep()
         do {
@@ -68,6 +73,21 @@ public final class AppModel {
         storeModel = StoreModel(app: self)
         flashModel = FlashModel(app: self)
         updateModel = UpdateModel(app: self)
+        refreshRunning()
+        // Apps started by an earlier run have no process object to say when they end.
+        let watch = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshRunning() }
+        }
+        RunLoop.main.add(watch, forMode: .common)
+        runningWatch = watch
+    }
+
+    /// Reads which apps run now; a Launcher update waiting for them goes on once none does.
+    func refreshRunning() {
+        let ids = Set(runningApps.running.map(\.id))
+        guard ids != runningIDs else { return }
+        runningIDs = ids
+        updateModel?.finishWhenIdle()
     }
 
     var profileStore: ProfileStore { ProfileStore(directory: profiles.directory(profile.id)) }
@@ -134,19 +154,19 @@ public final class AppModel {
         }
     }
 
-    public func isRunning(_ id: String) -> Bool { running[id]?.isRunning == true }
+    public func isRunning(_ id: String) -> Bool { runningIDs.contains(id) }
 
-    /// The apps open now, for work that checks off the main actor.
-    private var openApps: @Sendable (String) -> Bool {
-        let open = Set(running.filter { $0.value.isRunning }.keys)
-        return { open.contains($0) }
+    /// Whether an app runs at the moment it is asked, for checks off the main actor.
+    private var liveRunning: @Sendable (String) -> Bool {
+        let apps = runningApps
+        return { apps.isRunning($0) }
     }
 
     /// Opens an app with its folder as the working directory and the Gizlet
     /// environment: its ID and folder, its saves in the current profile, the
-    /// language, and the A/B layout a keyboard uses.
+    /// language, and the A/B layout a keyboard uses. Not while it is being updated.
     public func launch(_ app: InstalledApp) {
-        guard !isRunning(app.id) else { return }
+        guard !runningApps.isRunning(app.id) else { return }
         let saves = profileStore.saveDirectory(for: app.id)
         do {
             try FileManager.default.createDirectory(at: saves, withIntermediateDirectories: true)
@@ -160,15 +180,25 @@ public final class AppModel {
             environment["GIZLET_LANG"] = l.tag
             environment["GIZLET_SWAP_AB"] = "0"
             environment["GIZLET_PROFILE_ID"] = profile.id
-            for key in ["GIZLET_PREFIX", "GIZLET_STORE_API", "GIZLET_UPDATE_FEED"] { environment.removeValue(forKey: key) }
+            for key in ["GIZLET_PREFIX", "GIZLET_STORE_API", "GIZLET_UPDATE_FEED", "GIZLET_PAGE"] { environment.removeValue(forKey: key) }
             process.environment = environment
             process.standardInput = FileHandle.nullDevice
             let id = app.id
-            process.terminationHandler = { [weak self] _ in
-                Task { @MainActor in self?.running.removeValue(forKey: id) }
+            process.terminationHandler = { [weak self] ended in
+                let pid = ended.processIdentifier
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.runningApps.ended(id, pid: pid)
+                    self.processes.removeValue(forKey: id)
+                    self.refreshRunning()
+                }
             }
-            try process.run()
-            running[app.id] = process
+            try runningApps.launch(app.id, profile: profile.id) {
+                try process.run()
+                return process.processIdentifier
+            }
+            processes[app.id] = process
+            refreshRunning()
             try? profileStore.markPlayed(app.id)
         } catch {
             report(error, l("Cannot open \(app.manifest.name(for: l.tag))", "无法打开\(app.manifest.name(for: l.tag))"))
@@ -177,12 +207,24 @@ public final class AppModel {
 
     /// Asks a running app to quit, and ends it three seconds later if it is still running.
     public func stop(_ id: String) {
-        guard let process = running[id], process.isRunning else { return }
-        process.terminate()
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        runningApps.stop(id)
+    }
+
+    /// Runs `body` with `id` reserved: it cannot launch meanwhile, and is refused if it runs.
+    private func replacing<T>(_ id: String, _ body: () async throws -> T) async throws -> T {
+        try runningApps.reserve(id)
+        busyApps.insert(id)
+        defer {
+            busyApps.remove(id)
+            runningApps.release(id)
         }
+        return try await body()
+    }
+
+    private func replacing<T>(_ id: String, _ body: () throws -> T) throws -> T {
+        try runningApps.reserve(id)
+        defer { runningApps.release(id) }
+        return try body()
     }
 
     public func importPackage(_ url: URL) {
@@ -196,7 +238,7 @@ public final class AppModel {
                                 message: l("\(manifest.name) was from \(origin.repo); it will no longer get Store updates.",
                                            "\(manifest.name) 原来自 \(origin.repo)，之后不再从商店更新。"))
             }
-            let app = try store.installFile(url, isRunning: isRunning)
+            let app = try replacing(manifest.id) { try store.installFile(url, isRunning: liveRunning) }
             refreshApps()
             appUpdates.removeValue(forKey: app.id)
             section = .library
@@ -207,7 +249,7 @@ public final class AppModel {
 
     public func uninstall(_ id: String) {
         do {
-            try store.uninstall(id, isRunning: isRunning)
+            try replacing(id) { try store.uninstall(id, isRunning: liveRunning) }
             if settings.favorites.contains(id) { update { $0.favorites.removeAll { $0 == id } } }
             appUpdates.removeValue(forKey: id)
             refreshApps()
@@ -229,10 +271,9 @@ public final class AppModel {
 
     public func upgrade(_ id: String) async {
         guard let update = appUpdates[id], !busyApps.contains(id) else { return }
-        busyApps.insert(id)
-        defer { busyApps.remove(id) }
         do {
-            try await store.upgrade(update, isRunning: openApps, progress: { _, _ in })
+            let store = store, check = liveRunning
+            _ = try await replacing(id) { try await store.upgrade(update, isRunning: check, progress: { _, _ in }) }
             appUpdates.removeValue(forKey: id)
             refreshApps()
         } catch {
@@ -240,8 +281,9 @@ public final class AppModel {
         }
     }
 
-    func storeInstall(_ repo: String, progress: @escaping @Sendable (UInt64, UInt64?) -> Void) async throws -> InstalledApp {
-        let app = try await store.install(repo: repo, isRunning: openApps, progress: progress)
+    func storeInstall(_ repo: String, appID: String, progress: @escaping @Sendable (UInt64, UInt64?) -> Void) async throws -> InstalledApp {
+        let store = store, check = liveRunning
+        let app = try await replacing(appID) { try await store.install(repo: repo, isRunning: check, progress: progress) }
         refreshApps()
         appUpdates.removeValue(forKey: app.id)
         return app
@@ -273,6 +315,11 @@ public final class AppModel {
     }
 
     public func deleteProfile(_ id: String) {
+        if runningApps.running.contains(where: { $0.profile == id }) {
+            notice = Notice(title: l("Quit the open apps first", "请先退出正在运行的应用"),
+                            message: l("An app is still using this profile's saves.", "有应用仍在使用这个 Profile 的存档。"))
+            return
+        }
         do {
             try profiles.delete(id)
             profileList = profiles.list()
@@ -285,7 +332,7 @@ public final class AppModel {
     /// so they must be quit first.
     public func switchProfile(_ id: String) {
         guard id != profile.id else { return }
-        if running.values.contains(where: \.isRunning) {
+        if !runningApps.running.isEmpty {
             notice = Notice(title: l("Quit the open apps first", "请先退出正在运行的应用"),
                             message: l("Apps that are open keep their saves in the current profile.", "正在运行的应用会把存档写入当前 Profile。"))
             return

@@ -51,6 +51,8 @@ public final class StoreInstaller: @unchecked Sendable {
     public let client: StoreClient
     let downloader: Downloader
     private let lock = NSLock()
+    /// Held while what is installed, and where it came from, changes.
+    private let commitLock = NSLock()
 
     public init(library: AppLibrary, client: StoreClient, downloader: Downloader = Downloader()) {
         self.library = library
@@ -102,20 +104,7 @@ public final class StoreInstaller: @unchecked Sendable {
                          progress: @escaping @Sendable (UInt64, UInt64?) -> Void) async throws -> InstalledApp {
         guard isValidAppID(id) else { throw StoreInstallError.badPackage }
         guard kind == "app" else { throw PackageError.unsupported("Services run on Gizlet OS handhelds, not on a Mac") }
-        let current = library.app(id)
-        if let replaces, current?.manifest.version != replaces { throw StoreInstallError.changedWhileWaiting(id) }
-        if current != nil {
-            switch origins()[id] {
-            case .some(let origin) where origin.repo != repo:
-                throw StoreInstallError.otherSource(id: id, from: origin.repo)
-            case .some(let origin) where origin.repositoryID != nil && origin.repositoryID != repositoryID:
-                throw StoreInstallError.repositoryChanged(id: id)
-            case .none:
-                throw StoreInstallError.otherSource(id: id, from: nil)
-            default:
-                break
-            }
-        }
+        try checkSource(repo: repo, repositoryID: repositoryID, id: id, replaces: replaces)
         guard let url = package.url, let sha256 = package.sha256, let size = package.size else { throw StoreInstallError.notReady }
         guard isSHA256Hex(sha256), size > 0, size <= Self.packageLimit, url.scheme == "https" || url.host == "localhost" else {
             throw StoreInstallError.badPackage
@@ -123,20 +112,53 @@ public final class StoreInstaller: @unchecked Sendable {
         let file = downloads.appendingPathComponent("\(sha256).gzl")
         try await downloader.download(url, to: file, size: size, sha256: sha256, progress: progress)
         defer { try? FileManager.default.removeItem(at: file) }
+        // What is installed may have changed while downloading: check again, and
+        // replace the package and its origin together.
+        return try commit(file, origin: StoreOrigin(repo: repo, repositoryID: repositoryID, version: version, tag: tag, sha256: sha256),
+                          id: id, replaces: replaces, isRunning: isRunning)
+    }
+
+    private func commit(_ file: URL, origin: StoreOrigin, id: String, replaces: String?, isRunning: (String) -> Bool) throws -> InstalledApp {
+        commitLock.lock()
+        defer { commitLock.unlock() }
+        try checkSource(repo: origin.repo, repositoryID: origin.repositoryID, id: id, replaces: replaces)
         let installed = try library.install(file, expectedID: id, isRunning: isRunning)
-        try setOrigin(id, StoreOrigin(repo: repo, repositoryID: repositoryID, version: version, tag: tag, sha256: sha256))
+        try setOrigin(id, origin)
         return installed
+    }
+
+    /// Fails unless the repository may install `id` now: an installed app is only
+    /// replaced by the repository it came from, with the same GitHub repository id,
+    /// and an update only replaces the version it was offered for.
+    private func checkSource(repo: String, repositoryID: UInt64?, id: String, replaces: String?) throws {
+        let current = library.app(id)
+        if let replaces, current?.manifest.version != replaces { throw StoreInstallError.changedWhileWaiting(id) }
+        guard current != nil else { return }
+        switch origins()[id] {
+        case .some(let origin) where origin.repo != repo:
+            throw StoreInstallError.otherSource(id: id, from: origin.repo)
+        case .some(let origin) where origin.repositoryID != nil && origin.repositoryID != repositoryID:
+            throw StoreInstallError.repositoryChanged(id: id)
+        case .none:
+            throw StoreInstallError.otherSource(id: id, from: nil)
+        default:
+            break
+        }
     }
 
     /// Installs a local `.gzl`; it is no longer updated from the Store.
     @discardableResult
     public func installFile(_ file: URL, isRunning: (String) -> Bool) throws -> InstalledApp {
+        commitLock.lock()
+        defer { commitLock.unlock() }
         let installed = try library.install(file, isRunning: isRunning)
         try setOrigin(installed.id, nil)
         return installed
     }
 
     public func uninstall(_ id: String, isRunning: (String) -> Bool) throws {
+        commitLock.lock()
+        defer { commitLock.unlock() }
         try library.uninstall(id, isRunning: isRunning)
         try setOrigin(id, nil)
     }

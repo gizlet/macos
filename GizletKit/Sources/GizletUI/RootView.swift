@@ -178,6 +178,10 @@ struct UpdatePrompt: View {
                 Label(l("It installs after the card being written is finished.", "正在写卡，写完后再安装。"), systemImage: "sdcard")
                     .foregroundStyle(.secondary)
             }
+            if !model.runningIDs.isEmpty {
+                Label(l("It installs after the open games are quit.", "退出正在运行的游戏后再安装。"), systemImage: "gamecontroller")
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button(l("Later", "稍后")) { model.updateModel.later(release) }

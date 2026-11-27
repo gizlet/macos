@@ -57,6 +57,23 @@ import Testing
         }
     }
 
+    @Test func checksAgainWhatIsInstalledAfterDownloading() async throws {
+        let directory = try temporaryDirectory()
+        let response = offer(repo: "github.com/dev/late", repositoryID: 5, package: makePackage(manifest: manifestJSON(version: "2.0.0")))
+        let store = installer(directory, ["https://store.test/v1/gizlets/github.com/dev/late/install": response])
+        let local = try write(makePackage(manifest: manifestJSON(version: "1.5.0")), to: directory, name: "local.gzl")
+        // While the Store package downloads, the user installs the same app from a file.
+        let packageURL = try #require(String(decoding: response.body, as: UTF8.self).range(of: #"https://dl\.test/[^"]+"#, options: .regularExpression))
+        StubProtocol.onLoad[String(String(decoding: response.body, as: UTF8.self)[packageURL])] = {
+            _ = try? store.installFile(local, isRunning: { _ in false })
+        }
+        await #expect(throws: StoreInstallError.otherSource(id: "dev.example.hello", from: nil)) {
+            try await store.install(repo: "github.com/dev/late", isRunning: { _ in false }, progress: { _, _ in })
+        }
+        #expect(store.library.app("dev.example.hello")?.manifest.version == "1.5.0")
+        #expect(store.origins()["dev.example.hello"] == nil)
+    }
+
     @Test func refusesADamagedDownload() async throws {
         let directory = try temporaryDirectory()
         var response = offer(repo: "github.com/dev/broken", repositoryID: 3, package: makePackage())
@@ -79,7 +96,7 @@ import Testing
         StubProtocol.requests.removeAll()
         try await Downloader(session: session).download(URL(string: "https://dl.test/big")!, to: destination, size: UInt64(body.count), sha256: sha256(of: body))
         #expect(try Data(contentsOf: destination) == body)
-        #expect(StubProtocol.requests.last?.value(forHTTPHeaderField: "Range") == "bytes=100000-")
+        #expect(StubProtocol.requests.last { $0.url?.absoluteString == "https://dl.test/big" }?.value(forHTTPHeaderField: "Range") == "bytes=100000-")
     }
 
     @Test func asksForUpdatesOfStoreAppsOnly() async throws {

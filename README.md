@@ -85,7 +85,7 @@ Merging uses squash commits; `main` requires both checks.
 
 ## Releases and updates
 
-Push a `vMAJOR.MINOR.PATCH` tag (minor and patch below 100) on a commit in `main`, annotated with the release notes. The Release workflow (`release.yml`) runs `scripts/ci.sh` and `scripts/release.sh` on the macOS runner, the only job given the `SOPS_AGE_KEY` organization secret, which decrypts `devops/secrets/release.enc.yaml`:
+Push a `vMAJOR.MINOR.PATCH` tag (minor and patch below 100) on a commit in `main`, annotated with the release notes. The Release workflow (`release.yml`) runs `scripts/ci.sh` and `scripts/release.sh`, the only job given the `SOPS_AGE_KEY` organization secret, which decrypts `devops/secrets/release.enc.yaml`. It runs where pull-request code never ran: the runner `RUNNERS` maps to `macos-arm64-release`, which must not also serve `macos-arm64`, or else GitHub's `macos-26`, a fresh virtual machine for each job. A persistent Mac that builds pull requests could keep something running that captures the next release's credentials.
 
 1. Imports the Developer ID Application identity of team `D82Y886BX5` into a temporary keychain, and archives a universal `Gizlet.app` with the hardened runtime and a secure timestamp.
 2. Notarizes the app with the App Store Connect API key, staples the ticket, and checks it with `spctl`; packs it as `Gizlet-<version>.zip` for updates.

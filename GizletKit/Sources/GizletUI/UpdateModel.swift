@@ -17,6 +17,8 @@ public final class UpdateModel {
         case available(LauncherRelease)
         case downloading(LauncherRelease, Double)
         case waitingForFlash(LauncherRelease)
+        /// Open games would outlive the Launcher's relaunch, so it waits for them to quit.
+        case waitingForApps(LauncherRelease)
         case installing(LauncherRelease)
         case failed(String)
     }
@@ -55,7 +57,7 @@ public final class UpdateModel {
 
     public var isBusy: Bool {
         switch state {
-        case .checking, .downloading, .installing, .waitingForFlash: true
+        case .checking, .downloading, .installing, .waitingForFlash, .waitingForApps: true
         default: false
         }
     }
@@ -66,7 +68,7 @@ public final class UpdateModel {
             return
         }
         switch state {
-        case .checking, .downloading, .installing, .waitingForFlash: return
+        case .checking, .downloading, .installing, .waitingForFlash, .waitingForApps: return
         default: break
         }
         if manual { dismissed = nil }
@@ -123,11 +125,16 @@ public final class UpdateModel {
         }
     }
 
-    /// Called when a card write ends, and after staging.
+    /// Called after staging, when a card write ends and when an app quits:
+    /// installs once no card is being written and no app is open.
     func finishWhenIdle() {
         guard let staged, let installer else { return }
         if app.flashModel.isWriting {
             state = .waitingForFlash(staged.release)
+            return
+        }
+        if !app.runningApps.running.isEmpty {
+            state = .waitingForApps(staged.release)
             return
         }
         state = .installing(staged.release)
