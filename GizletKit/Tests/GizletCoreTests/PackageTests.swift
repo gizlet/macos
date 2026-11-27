@@ -142,6 +142,14 @@ import Testing
         #expect(throws: PackageError.self) { try library.install(write(makePackage(), to: directory), expectedID: "dev.example.other") }
     }
 
+    @Test func readsATruncatedUniversalHeaderSafely() throws {
+        let directory = try temporaryDirectory()
+        for bytes in [[0xCA, 0xFE, 0xBA, 0xBE], [0xCA, 0xFE, 0xBA, 0xBF, 0, 0], [0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 2]] as [[UInt8]] {
+            let file = try write(Data(bytes), to: directory, name: "fat")
+            #expect(ExecutableFormat.of(file) == .other)
+        }
+    }
+
     @Test func readsUniversalBinaries() throws {
         let format = ExecutableFormat.of(URL(fileURLWithPath: "/usr/bin/true"))
         guard case .machO(let types) = format else { Issue.record("not Mach-O: \(format)"); return }

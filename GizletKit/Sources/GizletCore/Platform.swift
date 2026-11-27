@@ -60,6 +60,7 @@ public enum ExecutableFormat: Equatable, Sendable {
         }
         let fat = head.u32BE(0)
         if fat == 0xCAFE_BABE || fat == 0xCAFE_BABF {
+            guard head.count >= 8 else { return .other }
             let count = Int(head.u32BE(4))
             let stride = fat == 0xCAFE_BABE ? 20 : 32
             guard count > 0, count < 32, head.count >= 8 + count * stride else { return .other }

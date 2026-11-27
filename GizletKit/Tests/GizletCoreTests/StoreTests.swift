@@ -121,6 +121,39 @@ import Testing
         #expect(body?["target"] as? String == hostTarget)
     }
 
+    @Test func asksForUpdatesInBatchesOf200() async throws {
+        // Answers each app in the request as current, whatever the batch.
+        final class Echo: URLProtocol {
+            nonisolated(unsafe) static var batches: [Int] = []
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                var body = Data()
+                if let stream = request.httpBodyStream {
+                    stream.open()
+                    var buffer = [UInt8](repeating: 0, count: 65536)
+                    while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; body.append(buffer, count: n) }
+                    stream.close()
+                }
+                let sent = (try? JSONSerialization.jsonObject(with: request.httpBody ?? body) as? [String: Any])?["installed"] as? [[String: Any]] ?? []
+                Echo.batches.append(sent.count)
+                let answers = sent.map { #"{"repo": "\#($0["repo"] as! String)", "id": "\#($0["id"] as! String)", "installed": "1.0.0", "status": "current"}"# }
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data(#"{"gizlets": [\#(answers.joined(separator: ","))]}"#.utf8))
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [Echo.self]
+        let client = StoreClient(api: api, platform: Platform(targets: ["aarch64-apple-darwin"]), session: URLSession(configuration: configuration))
+        let installed = (0..<450).map { StoreClient.InstalledItem(repo: "github.com/dev/app\($0)", repositoryID: UInt64($0), id: "dev.example.app\($0)", version: "1.0.0") }
+        let statuses = try await client.updates(installed)
+        #expect(Echo.batches == [200, 200, 50])
+        #expect(Set(statuses.map(\.appID)).count == 450)
+    }
+
     @Test func reportsStoreErrors() async throws {
         let session = StubProtocol.session([
             "https://store.test/v1/gizlets/github.com/dev/linux/install": .init(status: 404, body: Data(#"{"error": {"code": "no_compatible_package", "message": "No package for this Mac"}}"#.utf8)),

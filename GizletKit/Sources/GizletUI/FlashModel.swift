@@ -240,9 +240,9 @@ public final class FlashModel {
             monitor.setMountsBlocked(false, for: bsdName)
             if let panel {
                 step = .configuring
-                try await configure(bsdName, panel: panel)
+                try await configure(identity, panel: panel)
             }
-            try? await monitor.eject(bsdName)
+            if monitor.describe(bsdName)?.identity == identity { try? await monitor.eject(bsdName) }
             step = .done(disk.displayName)
         } catch {
             step = .failed(error.localizedDescription)
@@ -264,7 +264,8 @@ public final class FlashModel {
     /// macOS has found the new partitions: Panel 4's overlay copied to
     /// `mipi-panel.dtbo`, or for Panel 0, which the device tree itself
     /// describes, no `mipi-panel.dtbo` at all.
-    private func configure(_ bsdName: String, panel: R36SPanel) async throws {
+    private func configure(_ identity: DiskIdentity, panel: R36SPanel) async throws {
+        let bsdName = identity.bsdName
         let partition = bsdName + "s1"
         let failure: FlashError
         if let overlay = panel.overlay {
@@ -275,10 +276,13 @@ public final class FlashModel {
                                              "已写卡，但无法配置屏幕。请删除 GIZLETBOOT 上的 mipi-panel.dtbo。"))
         }
         for _ in 0..<30 {
-            if let volume = monitor.describe(bsdName)?.volumes.first(where: { $0.bsdName == partition }) {
+            // Only the card just written: another one given the same name is left alone.
+            guard let disk = monitor.describe(bsdName), disk.identity == identity else { throw FlashError.cardChanged }
+            if let volume = disk.volumes.first(where: { $0.bsdName == partition }) {
                 if volume.name != "GIZLETBOOT" { throw failure }
                 if volume.mountPoint == nil { try? await monitor.mount(partition) }
-                if let mount = monitor.describe(bsdName)?.volumes.first(where: { $0.bsdName == partition })?.mountPoint {
+                guard let current = monitor.describe(bsdName), current.identity == identity else { throw FlashError.cardChanged }
+                if let mount = current.volumes.first(where: { $0.bsdName == partition })?.mountPoint {
                     do {
                         try PanelDetector.select(panel, onBootVolume: mount)
                     } catch {

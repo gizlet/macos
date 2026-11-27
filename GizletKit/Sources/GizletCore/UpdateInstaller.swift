@@ -98,29 +98,49 @@ public struct UpdateInstaller: Sendable {
         return nil
     }
 
-    /// Starts the script that waits for this process to quit, moves `staged`
-    /// over `bundle` (keeping the old app until the new one is in place) and
-    /// opens it. The caller then quits.
+    /// Copies `staged` beside `bundle`, on the same volume, and checks the copy
+    /// again; then starts the script that waits for this process to quit,
+    /// swaps the two with renames (putting the old app back if the second
+    /// rename fails) and opens Gizlet. The caller then quits. A failed copy
+    /// leaves the installed app untouched.
     public func scheduleReplacement(of bundle: URL, with staged: Staged, pid: Int32 = ProcessInfo.processInfo.processIdentifier) throws {
         if let problem = Self.replaceableLocation(of: bundle) { throw UpdateError.notInstallable(problem) }
+        let fm = FileManager.default
+        let destination = bundle.standardizedFileURL
+        let beside = destination.deletingLastPathComponent()
+            .appendingPathComponent(".Gizlet-\(staged.release.version)-\(UUID().uuidString).app", isDirectory: true)
+        do {
+            try run("/usr/bin/ditto", [staged.app.path, beside.path])
+            try verify(beside, release: staged.release)
+        } catch {
+            try? fm.removeItem(at: beside)
+            throw UpdateError.notInstallable("The update could not be copied beside Gizlet; nothing was changed (\(error.localizedDescription))")
+        }
         let script = """
             set -u
             while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
             old="$2.old-$$"
             if mv "$2" "$old"; then
-              if mv "$3" "$2"; then rm -rf "$old"; else mv "$old" "$2"; fi
+              if mv "$3" "$2"; then rm -rf "$old"; else mv "$old" "$2"; rm -rf "$3"; fi
+            else
+              rm -rf "$3"
             fi
             rm -rf "$4"
             open "$2"
             """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script, "gizlet-update", String(pid), bundle.standardizedFileURL.path, staged.app.path,
+        process.arguments = ["-c", script, "gizlet-update", String(pid), destination.path, beside.path,
                              staged.app.deletingLastPathComponent().path]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            try? fm.removeItem(at: beside)
+            throw error
+        }
     }
 }
 

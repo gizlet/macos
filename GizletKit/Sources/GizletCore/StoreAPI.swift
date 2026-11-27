@@ -267,15 +267,21 @@ public struct StoreClient: Sendable {
         guard !installed.isEmpty else { return [] }
         var statuses: [StoreUpdateStatus] = []
         var ask = installed
+        // This Mac's own target first; an app with no package for it is asked
+        // again for the next target it runs. The API takes 200 apps a request.
         for target in platform.targets where !ask.isEmpty {
-            var request = URLRequest(url: api.appendingPathComponent("/v1/updates"))
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(Body(target: target, tier: platform.tier, installed: Array(ask.prefix(200))))
-            let answer: Answer = try await send(request)
-            statuses.removeAll { status in answer.gizlets.contains { $0.appID == status.appID } }
-            ask.removeAll { item in !answer.gizlets.contains { $0.status == "no_package" && $0.appID == item.id } }
-            statuses += answer.gizlets
+            var answered: [StoreUpdateStatus] = []
+            for start in stride(from: 0, to: ask.count, by: 200) {
+                var request = URLRequest(url: api.appendingPathComponent("/v1/updates"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(Body(target: target, tier: platform.tier, installed: Array(ask[start..<min(start + 200, ask.count)])))
+                let answer: Answer = try await send(request)
+                answered += answer.gizlets
+            }
+            statuses.removeAll { status in answered.contains { $0.appID == status.appID } }
+            statuses += answered
+            ask.removeAll { item in !answered.contains { $0.status == "no_package" && $0.appID == item.id } }
         }
         return statuses
     }
