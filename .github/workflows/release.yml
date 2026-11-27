@@ -1,0 +1,112 @@
+name: Release
+
+# A vMAJOR.MINOR.PATCH tag on a commit in main builds, signs, notarizes and
+# publishes the Launcher (scripts/release.sh). Only this workflow decrypts the
+# release credentials; pull-request CI never sees them.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: tag
+        run: |
+          release_tag='^v(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$'
+          [[ "$GITHUB_REF_NAME" =~ $release_tag ]] || { echo "::error::$GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1; }
+          commit=$(git rev-parse 'HEAD^{commit}')
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build, notarize and publish (macOS)
+    needs: verify
+    # The self-hosted Mac that the RUNNERS organization variable maps to macos-arm64.
+    runs-on: ${{ fromJSON(vars.RUNNERS || '{}')['macos-arm64'] || 'macos-26' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check tools
+        run: |
+          for tool in sops jq; do
+            command -v "$tool" >/dev/null || brew install "$tool"
+          done
+          xcodebuild -version
+      - name: Build and test
+        run: scripts/ci.sh
+      - name: Sign, notarize and publish
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: scripts/release.sh "$GITHUB_REF_NAME" "${{ needs.verify.outputs.commit }}"
+
+  github-release:
+    name: Attach the release to GitHub
+    needs: [verify, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - name: Download and verify the published release
+        env:
+          RELEASE_COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          directory="$RUNNER_TEMP/release"
+          base="https://gizlet.io/assets/macos/releases/$GITHUB_REF_NAME"
+          mkdir -p "$directory"
+          fetch() { curl --fail --silent --show-error --location --retry 3 --max-time 600 "$base/$1" -o "$directory/$1"; }
+          fetch manifest.json
+          fetch manifest.json.sig
+          ssh-keygen -Y verify -f devops/allowed_signers -I launcher -n gizlet-macos-update \
+            -s "$directory/manifest.json.sig" < "$directory/manifest.json"
+          jq -e --arg tag "$GITHUB_REF_NAME" --arg commit "$RELEASE_COMMIT" \
+            '.tag == $tag and .commit == $commit' "$directory/manifest.json"
+          for file in dmg archive; do
+            name=$(jq -r ".$file.path" "$directory/manifest.json")
+            fetch "$name"
+            echo "$(jq -r ".$file.sha256" "$directory/manifest.json")  $directory/$name" | sha256sum -c
+          done
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          directory="$RUNNER_TEMP/release"
+          dmg=$(jq -r .dmg.path "$directory/manifest.json")
+          notes=$(jq -r '.notes.en' "$directory/manifest.json")
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$directory/$dmg" "$directory/manifest.json" "$directory/manifest.json.sig" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$directory/$dmg" "$directory/manifest.json" "$directory/manifest.json.sig" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --title "Gizlet $GITHUB_REF_NAME" \
+              --notes "$notes"$'\n\n'"Download: https://gizlet.io/assets/macos/releases/$GITHUB_REF_NAME/$dmg"
+          fi

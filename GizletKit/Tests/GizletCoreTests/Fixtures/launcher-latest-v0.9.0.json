@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "manifest": "{\n  \"schema\": 1,\n  \"version\": \"0.9.0\",\n  \"tag\": \"v0.9.0\",\n  \"commit\": \"ffffffffffffffffffffffffffffffffffffffff\",\n  \"minimum_macos\": \"14.0\",\n  \"published_at\": \"2026-11-27T19:59:18Z\",\n  \"notes\": {\n    \"en\": \"Fixture release.\"\n  },\n  \"archive\": {\n    \"path\": \"Gizlet-0.9.0.zip\",\n    \"sha256\": \"4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2\",\n    \"bytes\": 3\n  },\n  \"dmg\": {\n    \"path\": \"Gizlet-0.9.0.dmg\",\n    \"sha256\": \"00cbbd0ddbda2762798f7009838ed34ca1f12b93965813c7df22943bc62166d1\",\n    \"bytes\": 3\n  }\n}\n",
+  "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg8GTBAco/UscuHLAHRnEorUj60X\nk2ODls47+EW166/8UAAAATZ2l6bGV0LW1hY29zLXVwZGF0ZQAAAAAAAAAGc2hhNTEyAAAA\nUwAAAAtzc2gtZWQyNTUxOQAAAEBs6p2rnu11kG76VAK5oo0L0mmcmzH5uArV/6MvsROlho\nFkG5BAm0mAw7wlpEh96GkUBFIdJpZNNLowZB/d7sAE\n-----END SSH SIGNATURE-----\n"
+}
