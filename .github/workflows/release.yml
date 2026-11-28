@@ -92,23 +92,25 @@ jobs:
             -s "$directory/manifest.json.sig" < "$directory/manifest.json"
           jq -e --arg tag "$GITHUB_REF_NAME" --arg commit "$RELEASE_COMMIT" \
             '.tag == $tag and .commit == $commit' "$directory/manifest.json"
-          for file in dmg archive; do
-            name=$(jq -r ".$file.path" "$directory/manifest.json")
+          for file in .archive .dmgs.arm64 .dmgs.x86_64; do
+            name=$(jq -er "$file.path" "$directory/manifest.json")
             fetch "$name"
-            echo "$(jq -r ".$file.sha256" "$directory/manifest.json")  $directory/$name" | sha256sum -c
+            echo "$(jq -er "$file.sha256" "$directory/manifest.json")  $directory/$name" | sha256sum -c
           done
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           directory="$RUNNER_TEMP/release"
-          dmg=$(jq -r .dmg.path "$directory/manifest.json")
+          arm64=$(jq -er .dmgs.arm64.path "$directory/manifest.json")
+          intel=$(jq -er .dmgs.x86_64.path "$directory/manifest.json")
           notes=$(jq -r '.notes.en' "$directory/manifest.json")
+          assets=("$directory/$arm64" "$directory/$intel" "$directory/manifest.json" "$directory/manifest.json.sig")
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$directory/$dmg" "$directory/manifest.json" "$directory/manifest.json.sig" \
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$directory/$dmg" "$directory/manifest.json" "$directory/manifest.json.sig" \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" --verify-tag --title "Gizlet $GITHUB_REF_NAME" \
-              --notes "$notes"$'\n\n'"Download: https://gizlet.io/assets/macos/releases/$GITHUB_REF_NAME/$dmg"
+              --notes "$notes"$'\n\n'"Choose the Apple silicon or Intel installer at https://gizlet.io/install#macos."
           fi

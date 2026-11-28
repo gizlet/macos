@@ -15,6 +15,8 @@ import release  # noqa: E402
 class ReleaseFixture(unittest.TestCase):
     """A signing key, its allowed_signers and the files of a built release."""
 
+    images = {"arm64": "Gizlet-1.2.3-arm64.dmg", "x86_64": "Gizlet-1.2.3-x86_64.dmg"}
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name)
@@ -26,13 +28,14 @@ class ReleaseFixture(unittest.TestCase):
         self.out = self.path / "out"
         self.out.mkdir()
         (self.out / "Gizlet-1.2.3.zip").write_bytes(b"zip")
-        (self.out / "Gizlet-1.2.3.dmg").write_bytes(b"dmg image")
+        for arch, filename in self.images.items():
+            (self.out / filename).write_bytes(arch.encode())
 
     def tearDown(self):
         self.directory.cleanup()
 
     def assemble(self, key=None):
-        return release.assemble("v1.2.3", "a" * 40, self.out, "Gizlet-1.2.3.zip", "Gizlet-1.2.3.dmg", "Faster.\n",
+        return release.assemble("v1.2.3", "a" * 40, self.out, "Gizlet-1.2.3.zip", self.images, "Faster.\n",
                                 (key or self.key).read_text(), allowed_signers=self.signers,
                                 now=datetime.datetime(2026, 11, 28, tzinfo=datetime.timezone.utc))
 
@@ -42,7 +45,11 @@ class AssembleTest(ReleaseFixture):
         manifest = self.assemble()
         self.assertEqual(manifest["version"], "1.2.3")
         self.assertEqual(manifest["minimum_macos"], "14.0")
-        self.assertEqual(manifest["dmg"]["bytes"], 9)
+        self.assertEqual(manifest["dmg"], manifest["dmgs"]["arm64"])
+        for arch, filename in self.images.items():
+            self.assertEqual(manifest["dmgs"][arch], {
+                "path": filename, "sha256": hashlib.sha256(arch.encode()).hexdigest(), "bytes": len(arch)
+            })
         self.assertEqual(manifest["archive"], {"path": "Gizlet-1.2.3.zip", "sha256": hashlib.sha256(b"zip").hexdigest(), "bytes": 3})
         envelope = json.loads((self.out / "latest.json").read_text())
         self.assertEqual(envelope["schema"], 1)
@@ -116,8 +123,21 @@ class PublishTest(ReleaseFixture):
 
     def test_uploads_the_version_then_promotes_it(self):
         manifest = self.publish()
+        for filename in self.images.values():
+            self.assertIn(f"macos/releases/v1.2.3/{filename}", self.puts[:-2])
         self.assertEqual(self.puts[-2:], ["macos/releases/v1.2.3/manifest.json", "macos/latest.json"])
         self.assertEqual(json.loads(self.latest()["manifest"]), manifest)
+
+    def test_checks_both_downloads_before_promotion(self):
+        from unittest.mock import patch
+
+        original_fetch = release.fetch
+        intel = f"/{self.images['x86_64']}"
+        with patch.object(release, "fetch", side_effect=lambda url: b"damaged" if url.endswith(intel) else original_fetch(url)), \
+             patch.object(release.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, self.images["x86_64"]):
+                self.publish()
+        self.assertNotIn("macos/latest.json", self.puts)
 
     def test_a_rerun_finishes_with_what_was_uploaded(self):
         first = self.publish()
