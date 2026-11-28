@@ -1,0 +1,70 @@
+# Generates Gizlet.xcodeproj: `xcodegen generate`. Edit this file, not the project.
+name: Gizlet
+options:
+  bundleIdPrefix: io.gizlet
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+packages:
+  GizletKit:
+    path: GizletKit
+targets:
+  Gizlet:
+    type: application
+    platform: macOS
+    sources:
+      - App/Sources
+      - App/Resources
+    dependencies:
+      - package: GizletKit
+        product: GizletUI
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Gizlet
+        CFBundleName: Gizlet
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, zh-Hans]
+        LSApplicationCategoryType: public.app-category.games
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSHumanReadableCopyright: Gizlet
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Gizlet Package
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes: [io.gizlet.package]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: io.gizlet.package
+            UTTypeDescription: Gizlet Package
+            UTTypeConformsTo: [public.zip-archive, public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [gzl]
+    settings:
+      base:
+        PRODUCT_NAME: Gizlet
+        PRODUCT_BUNDLE_IDENTIFIER: io.gizlet.macos
+        MARKETING_VERSION: 0.0.0
+        CURRENT_PROJECT_VERSION: 1
+        DEVELOPMENT_TEAM: D82Y886BX5
+        # Development and CI builds are signed ad hoc; scripts/release.sh signs with Developer ID.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+        DEAD_CODE_STRIPPING: YES
+        ARCHS: "$(ARCHS_STANDARD)"
+schemes:
+  Gizlet:
+    build:
+      targets:
+        Gizlet: all
+    test:
+      config: Debug
+      targets:
+        - package: GizletKit/GizletCoreTests
+    archive:
+      config: Release
