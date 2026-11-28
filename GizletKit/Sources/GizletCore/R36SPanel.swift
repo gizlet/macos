@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// The R36S's LCD panels Gizlet OS drives. The stock firmware numbers them.
@@ -58,18 +59,53 @@ public enum PanelDetector {
     /// Makes a Gizlet OS boot volume select `panel`: Panel 4's overlay copied
     /// to `mipi-panel.dtbo` (as plain bytes: FAT would keep extended attributes
     /// as `._` files), or for Panel 0 any `mipi-panel.dtbo` removed.
-    public static func select(_ panel: R36SPanel, onBootVolume volume: URL) throws {
-        let fm = FileManager.default
-        let selected = volume.appendingPathComponent("mipi-panel.dtbo")
+    public static func select(_ panel: R36SPanel, onBootVolume volume: URL, device: String) throws {
+        try select(panel, onBootVolume: volume, expectedDevice: device)
+    }
+
+    static func select(_ panel: R36SPanel, onBootVolume volume: URL, expectedDevice: String? = nil) throws {
+        let directory = open(volume.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw FlashError.write("Cannot open the boot volume") }
+        defer { close(directory) }
+        if let expectedDevice {
+            var mount = statfs()
+            guard fstatfs(directory, &mount) == 0 else { throw FlashError.write("Cannot identify the boot volume") }
+            let type = withUnsafeBytes(of: mount.f_fstypename) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            let source = withUnsafeBytes(of: mount.f_mntfromname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            guard type == "msdos", source == "/dev/\(expectedDevice)" else {
+                throw FlashError.write("Expected a FAT boot volume on \(expectedDevice)")
+            }
+        }
+        let selected = "mipi-panel.dtbo"
+        var targetInfo = stat()
+        if fstatat(directory, selected, &targetInfo, AT_SYMLINK_NOFOLLOW) == 0 {
+            guard targetInfo.st_mode & S_IFMT == S_IFREG else { throw FlashError.write("Invalid \(selected)") }
+        } else if errno != ENOENT {
+            throw FlashError.write("Cannot check \(selected)")
+        }
         guard let overlay = panel.overlay else {
-            if fm.fileExists(atPath: selected.path) { try fm.removeItem(at: selected) }
+            if unlinkat(directory, selected, 0) != 0, errno != ENOENT { throw FlashError.write("Cannot remove \(selected)") }
             return
         }
-        guard let data = fm.contents(atPath: volume.appendingPathComponent(overlay).path) else {
-            throw FlashError.write("The card has no \(overlay)")
+        let input = openat(directory, overlay, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard input >= 0 else { throw FlashError.write("Cannot open \(overlay)") }
+        let inputFile = FileHandle(fileDescriptor: input, closeOnDealloc: true)
+        var inputInfo = stat()
+        let limit = 1 << 20
+        guard fstat(input, &inputInfo) == 0, inputInfo.st_mode & S_IFMT == S_IFREG,
+              let data = try inputFile.read(upToCount: limit + 1), !data.isEmpty, data.count <= limit else {
+            throw FlashError.write("Invalid \(overlay)")
         }
-        guard fm.createFile(atPath: selected.path, contents: data) else {
-            throw FlashError.write("Cannot write mipi-panel.dtbo")
+        let temporary = ".panel-\(UUID().uuidString)"
+        let output = openat(directory, temporary, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, mode_t(0o644))
+        guard output >= 0 else { throw FlashError.write("Cannot stage \(selected)") }
+        defer { _ = unlinkat(directory, temporary, 0) }
+        let outputFile = FileHandle(fileDescriptor: output, closeOnDealloc: true)
+        try outputFile.write(contentsOf: data)
+        try outputFile.synchronize()
+        try outputFile.close()
+        guard renameat(directory, temporary, directory, selected) == 0 else {
+            throw FlashError.write("Cannot replace \(selected)")
         }
     }
 

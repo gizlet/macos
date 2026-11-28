@@ -320,7 +320,7 @@ public final class FlashModel {
                 guard let current = monitor.describe(bsdName), current.identity == identity else { throw FlashError.cardChanged }
                 if let mount = current.volumes.first(where: { $0.bsdName == partition })?.mountPoint {
                     do {
-                        try PanelDetector.select(panel, onBootVolume: mount)
+                        try PanelDetector.select(panel, onBootVolume: mount, device: partition)
                     } catch {
                         throw failure
                     }
