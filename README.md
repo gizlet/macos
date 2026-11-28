@@ -89,11 +89,11 @@ Push a `vMAJOR.MINOR.PATCH` tag (minor and patch below 100) on a commit in `main
 
 1. Imports the Developer ID Application identity of team `D82Y886BX5` into a temporary keychain, and archives a universal `Gizlet.app` with the hardened runtime and a secure timestamp.
 2. Notarizes the app with the App Store Connect API key, staples the ticket, and checks it with `spctl`; packs it as `Gizlet-<version>.zip` for updates.
-3. Builds `Gizlet-<version>.dmg`, signs, notarizes and staples it, and checks the image and the app inside it as Gatekeeper does.
-4. `devops/release.py` writes `manifest.json` (version, minimum macOS, notes, and the size and SHA-256 of both files), signs it with the update key (`ssh-keygen -Y sign`, namespace `gizlet-macos-update`), and uploads `macos/releases/<tag>/` to the `gizlet-assets` R2 bucket, the manifest last and never over an existing one.
+3. Builds separate `Gizlet-<version>-arm64.dmg` and `Gizlet-<version>-x86_64.dmg` installers. CI notarizes and staples each image and checks both the image and its app with Gatekeeper.
+4. `devops/release.py` writes `manifest.json` with the version, minimum macOS, notes, and the size and SHA-256 of both installers and the universal update ZIP. The manifest retains `dmg` as an alias for `dmgs.arm64` for schema 1 update clients. The script signs the manifest with `ssh-keygen -Y sign` (namespace `gizlet-macos-update`) and uploads `macos/releases/<tag>/` to the `gizlet-assets` R2 bucket. The signed manifest is uploaded last, and existing releases are immutable.
 5. After every file downloads from `https://gizlet.io/assets/macos/releases/<tag>/` with its SHA-256, it uploads `macos/latest.json` (the manifest's text and signature), unless a newer version is already there.
 
-A last job attaches the DMG and signed manifest to a GitHub release. gizlet.io serves version folders as immutable and `latest.json` with `Cache-Control: no-cache`, so each check revalidates it.
+A last job attaches both DMGs and the signed manifest to a GitHub release. gizlet.io serves version folders as immutable and `latest.json` with `Cache-Control: no-cache`, so each check revalidates it.
 
 The Launcher reads `latest.json` when it starts and every 120 seconds. It verifies the signature with the key built into it (`TrustedKeys.swift`, the same as `devops/allowed_signers`), and offers a newer version that runs on this macOS. Installing downloads the archive, checks its size and SHA-256, and requires exactly one `Gizlet.app` of that version with bundle ID `io.gizlet.macos`, signed by Developer ID team `D82Y886BX5`, notarized, and valid with its nested code. Then it quits, and a helper replaces the app, keeping the old one until the new one is in place, and opens it. A card being written postpones the install; any failed check keeps the running version. Settings can also check at once and open Gizlet at login.
 

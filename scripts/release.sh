@@ -45,8 +45,12 @@ done
 # Credentials live in a private folder and a temporary keychain, removed on exit.
 private=$(umask 077 && mktemp -d)
 keychain=${private}/release.keychain-db
+mount=
 original_keychains=$(security list-keychains -d user | tr -d '"' | xargs)
 cleanup() {
+    if [ -n "${mount}" ]; then
+        hdiutil detach "${mount}" -quiet || true
+    fi
     # shellcheck disable=SC2086
     security list-keychains -d user -s ${original_keychains} 2>/dev/null || true
     security delete-keychain "${keychain}" 2>/dev/null || true
@@ -83,7 +87,8 @@ status=$?
 set -e
 [ "${status}" = 0 ] || { tail -n 80 "${out}/archive.log"; exit "${status}"; }
 app=${out}/Gizlet.app
-ditto "${out}/Gizlet.xcarchive/Products/Applications/Gizlet.app" "${app}"
+archived_app=${out}/Gizlet.xcarchive/Products/Applications/Gizlet.app
+ditto "${archived_app}" "${app}"
 
 log 'Checking the signature'
 codesign --verify --deep --strict --verbose=2 "${app}"
@@ -121,31 +126,46 @@ log 'Packing the update archive'
 archive=Gizlet-${version}.zip
 ditto -c -k --sequesterRsrc --keepParent "${app}" "${out}/${archive}"
 
-log 'Building the disk image'
-dmg=Gizlet-${version}.dmg
-staging=${out}/dmg
-mkdir -p "${staging}"
-ditto "${app}" "${staging}/Gizlet.app"
-ln -s /Applications "${staging}/Applications"
-hdiutil create -volname "Gizlet ${version}" -srcfolder "${staging}" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "${out}/${dmg}"
-codesign --sign "${identity}" --keychain "${keychain}" --timestamp "${out}/${dmg}"
-notarize "${out}/${dmg}"
-xcrun stapler staple "${out}/${dmg}"
-xcrun stapler validate "${out}/${dmg}"
-spctl --assess --type open --context context:primary-signature -vv "${out}/${dmg}" 2>&1 | tee "${out}/gatekeeper-dmg.txt"
-grep -q 'source=Notarized Developer ID' "${out}/gatekeeper-dmg.txt"
+build_dmg() {
+    local arch=$1 dmg=$2 staging=${out}/dmg-$1
+    local thin_app=${staging}/Gizlet.app executable=${staging}/Gizlet.app/Contents/MacOS/Gizlet
+    log "Building the ${arch} disk image"
+    mkdir -p "${staging}"
+    ditto "${archived_app}" "${thin_app}"
+    lipo "${executable}" -thin "${arch}" -output "${private}/Gizlet-${arch}"
+    install -m 755 "${private}/Gizlet-${arch}" "${executable}"
+    codesign --force --sign "${identity}" --keychain "${keychain}" --options runtime --timestamp "${thin_app}"
+    codesign --verify --deep --strict "${thin_app}"
+    ln -s /Applications "${staging}/Applications"
+    hdiutil create -volname "Gizlet ${version} (${arch})" -srcfolder "${staging}" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "${out}/${dmg}"
+    codesign --sign "${identity}" --keychain "${keychain}" --timestamp "${out}/${dmg}"
+    notarize "${out}/${dmg}"
+    xcrun stapler staple "${out}/${dmg}"
+    xcrun stapler validate "${out}/${dmg}"
+    spctl --assess --type open --context context:primary-signature -vv "${out}/${dmg}" 2>&1 | tee "${out}/gatekeeper-${arch}-dmg.txt"
+    grep -q 'source=Notarized Developer ID' "${out}/gatekeeper-${arch}-dmg.txt"
 
-# The app inside the image, as a user would open it.
-mount=$(hdiutil attach -nobrowse -readonly -noautoopen "${out}/${dmg}" | awk -F'\t' '/\/Volumes\// {print $NF; exit}')
-spctl --assess --type execute -vv "${mount}/Gizlet.app" 2>&1 | grep -q 'source=Notarized Developer ID'
-codesign --verify --deep --strict "${mount}/Gizlet.app"
-hdiutil detach "${mount}" -quiet
+    mkdir -p "${private}/mount-${arch}"
+    hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "${private}/mount-${arch}" "${out}/${dmg}"
+    mount=${private}/mount-${arch}
+    spctl --assess --type execute -vv "${mount}/Gizlet.app" 2>&1 | grep 'source=Notarized Developer ID'
+    codesign --verify --deep --strict "${mount}/Gizlet.app"
+    [ "$(lipo -archs "${mount}/Gizlet.app/Contents/MacOS/Gizlet")" = "${arch}" ]
+    hdiutil detach "${mount}" -quiet
+    mount=
+}
+
+arm64_dmg=Gizlet-${version}-arm64.dmg
+intel_dmg=Gizlet-${version}-x86_64.dmg
+build_dmg arm64 "${arm64_dmg}"
+build_dmg x86_64 "${intel_dmg}"
 
 notes=$(git tag -l --format='%(contents)' "${tag}" | sed '/-----BEGIN PGP SIGNATURE-----/,$d')
 [ -n "${notes}" ] || notes=$(git log -1 --format=%s "${commit}")
 printf '%s\n' "${notes}" > "${out}/notes.txt"
 
-publish=(python3 -I devops/release.py "${tag}" "${commit}" "${out}" --archive "${archive}" --dmg "${dmg}" --notes "${out}/notes.txt")
+publish=(python3 -I devops/release.py "${tag}" "${commit}" "${out}" --archive "${archive}" \
+    --dmg-arm64 "${arm64_dmg}" --dmg-x86-64 "${intel_dmg}" --notes "${out}/notes.txt")
 if [ "${GIZLET_RELEASE_DRY_RUN:-}" = 1 ]; then
     jq '{UPDATE_SIGNING_KEY}' <<< "${secrets}" | "${publish[@]}" --assemble-only
     log "Built ${out}; nothing was published (dry run)."

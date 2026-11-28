@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Signs a Launcher release's update manifest and publishes it to R2.
 
-    release.py TAG COMMIT OUT --archive NAME --dmg NAME --notes FILE [--assemble-only] < credentials.json
+    release.py TAG COMMIT OUT --archive NAME --dmg-arm64 NAME --dmg-x86-64 NAME --notes FILE [--assemble-only] < credentials.json
 
 OUT holds the notarized update archive and disk image that scripts/release.sh
 built. This writes OUT/manifest.json, its OpenSSH signature and OUT/latest.json
@@ -60,9 +60,13 @@ def trusted_key(allowed_signers):
     return fields[-2:]
 
 
-def assemble(tag, commit, out, archive, dmg, notes, signing_key, allowed_signers=ROOT / "devops/allowed_signers", now=None):
+def assemble(tag, commit, out, archive, dmgs, notes, signing_key, allowed_signers=ROOT / "devops/allowed_signers", now=None):
     version = tag[1:]
     version_tuple(version)
+    expected = {"arm64": f"Gizlet-{version}-arm64.dmg", "x86_64": f"Gizlet-{version}-x86_64.dmg"}
+    if dmgs != expected:
+        raise ValueError(f"Expected one installer for each architecture: {expected}")
+    images = {arch: describe(out / name) for arch, name in dmgs.items()}
     manifest = {
         "schema": 1,
         "version": version,
@@ -72,7 +76,8 @@ def assemble(tag, commit, out, archive, dmg, notes, signing_key, allowed_signers
         "published_at": (now or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "notes": {"en": notes.strip()},
         "archive": describe(out / archive),
-        "dmg": describe(out / dmg),
+        "dmg": images["arm64"],
+        "dmgs": images,
     }
     text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
     manifest_path = out / "manifest.json"
@@ -201,6 +206,12 @@ def published_version(site=SITE):
         raise
 
 
+def release_artifacts(manifest):
+    yield manifest["archive"], "application/zip"
+    for image in manifest["dmgs"].values():
+        yield image, "application/x-apple-diskimage"
+
+
 def publish(tag, out, manifest, credentials, site=SITE, allowed_signers=ROOT / "devops/allowed_signers"):
     r2 = R2(credentials)
     folder = f"{PREFIX}/releases/{tag}/"
@@ -210,15 +221,16 @@ def publish(tag, out, manifest, credentials, site=SITE, allowed_signers=ROOT / "
         print(f"{tag} is already uploaded; checking and promoting it", flush=True)
     else:
         immutable = "public, max-age=31536000, immutable"
-        for name, content_type in ((manifest["archive"]["path"], "application/zip"),
-                                   (manifest["dmg"]["path"], "application/x-apple-diskimage"),
-                                   ("manifest.json.sig", "text/plain; charset=utf-8"),
+        for file, content_type in release_artifacts(manifest):
+            r2.put(folder + file["path"], out / file["path"], content_type, immutable)
+        for name, content_type in (("manifest.json.sig", "text/plain; charset=utf-8"),
                                    ("latest.json", "application/json")):
             r2.put(folder + name, out / name, content_type, immutable)
         r2.put(folder + "manifest.json", out / "manifest.json", "application/json", immutable, only_new=True)
 
-    for file in (manifest["archive"], manifest["dmg"]):
-        wait_for(f"{site}/assets/{folder}{file['path']}", lambda body, file=file: hashlib.sha256(body).hexdigest() == file["sha256"])
+    for file, _ in release_artifacts(manifest):
+        wait_for(f"{site}/assets/{folder}{file['path']}",
+                 lambda body, file=file: len(body) == file["bytes"] and hashlib.sha256(body).hexdigest() == file["sha256"])
         print(f"Verified {site}/assets/{folder}{file['path']}", flush=True)
 
     current = published_version(site)
@@ -238,17 +250,19 @@ def main():
     parser.add_argument("commit")
     parser.add_argument("out", type=Path)
     parser.add_argument("--archive", required=True)
-    parser.add_argument("--dmg", required=True)
+    parser.add_argument("--dmg-arm64", required=True)
+    parser.add_argument("--dmg-x86-64", required=True)
     parser.add_argument("--notes", type=Path, required=True)
     parser.add_argument("--assemble-only", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(f"v{VERSION}", args.tag) or not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         parser.error("expected vMAJOR.MINOR.PATCH and a full commit SHA")
-    for name in (args.archive, args.dmg):
+    dmgs = {"arm64": args.dmg_arm64, "x86_64": args.dmg_x86_64}
+    for name in (args.archive, *dmgs.values()):
         if "/" in name or not (args.out / name).is_file():
             parser.error(f"{name} is not a file in {args.out}")
     credentials = json.load(sys.stdin)
-    manifest = assemble(args.tag, args.commit, args.out, args.archive, args.dmg, args.notes.read_text(), credentials["UPDATE_SIGNING_KEY"])
+    manifest = assemble(args.tag, args.commit, args.out, args.archive, dmgs, args.notes.read_text(), credentials["UPDATE_SIGNING_KEY"])
     print(json.dumps(manifest, indent=2))
     if not args.assemble_only:
         publish(args.tag, args.out, manifest, credentials)
