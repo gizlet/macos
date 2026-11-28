@@ -184,7 +184,7 @@ struct FlashProgress: View {
             steps(flash.step)
             HStack {
                 switch flash.step {
-                case .done, .failed:
+                case .done, .failed, .doneNotEjected:
                     Button(l("Done", "完成")) { flash.reset() }
                 case .writing, .verifying:
                     Button(l("Stop", "停止"), role: .destructive) { flash.cancel() }
@@ -217,6 +217,13 @@ struct FlashProgress: View {
         case .done(let name):
             Label(l("Done: \(name) is written and verified, and safe to remove. Put it in the R36S and switch it on.",
                     "完成：\(name) 已写入并校验，可以安全取出。把卡插进 R36S 开机。"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .doneNotEjected(let name, _):
+            VStack(alignment: .leading, spacing: 8) {
+                Label(l("\(name) is written and verified, but it could not be ejected: a window or app is still using it. Close it, then eject the card before removing it.",
+                        "\(name) 已写入并校验，但无法推出：仍有窗口或应用在使用它。请关闭后推出卡片，再取出。"),
+                      systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Button(l("Eject", "推出")) { Task { await model.flashModel.ejectAgain() } }
+            }
         case .failed(let message):
             Label(message, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
         }

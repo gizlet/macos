@@ -25,6 +25,8 @@ public final class FlashModel {
         case verifying(Double)
         case configuring
         case done(String)
+        /// Written and verified, but macOS could not eject it: something still uses it.
+        case doneNotEjected(String, DiskIdentity)
         case failed(String)
     }
 
@@ -259,12 +261,31 @@ public final class FlashModel {
                 step = .configuring
                 try await configure(identity, panel: panel)
             }
-            if monitor.describe(bsdName)?.identity == identity { try? await monitor.eject(bsdName) }
-            step = .done(disk.displayName)
+            // Safe to remove only once ejected; a card already taken out is gone anyway.
+            if monitor.describe(bsdName)?.identity == identity {
+                do {
+                    try await monitor.eject(bsdName)
+                    step = .done(disk.displayName)
+                } catch {
+                    step = .doneNotEjected(disk.displayName, identity)
+                }
+            } else {
+                step = .done(disk.displayName)
+            }
         } catch {
             step = .failed(app.l.describe(error))
         }
         writer = nil
+    }
+
+    /// Tries again to eject a written card that something was using.
+    public func ejectAgain() async {
+        guard case .doneNotEjected(let name, let identity) = step else { return }
+        guard monitor.describe(identity.bsdName)?.identity == identity else {
+            step = .done(name)
+            return
+        }
+        if (try? await monitor.eject(identity.bsdName)) != nil { step = .done(name) }
     }
 
     public func cancel() {
