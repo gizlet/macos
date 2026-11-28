@@ -46,6 +46,8 @@ import Testing
         await #expect(throws: (any Error).self) { try await preparer.prepare(.file(try write(short, to: directory, name: "short.img.gz"))) { _, _, _ in } }
         let noTrailer = Data(whole.dropLast(8))
         await #expect(throws: FlashError.self) { try await preparer.prepare(.file(try write(noTrailer, to: directory, name: "trailerless.img.gz"))) { _, _, _ in } }
+        // No partial image is left in the cache.
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("cache/local/card.img").path))
     }
 
     @Test func takesARawImageAsItIs() async throws {

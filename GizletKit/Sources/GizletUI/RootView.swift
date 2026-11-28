@@ -129,7 +129,7 @@ struct ProfileButton: View {
                 }
             }
             Divider()
-            Button(l("Settings…", "设置…")) { model.storeModel.query = ""; model.section = .settings }
+            Button(l("Settings…", "设置…")) { model.storeModel.query = ""; model.storeModel.path = []; model.section = .settings }
         } label: {
             HStack(spacing: 10) {
                 Avatar(profile: model.profile, size: 34)

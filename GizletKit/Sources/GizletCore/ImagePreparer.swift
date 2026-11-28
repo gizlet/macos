@@ -28,6 +28,8 @@ public enum PreparePhase: Equatable, Sendable {
 /// manifest) or reads a local `.img` or `.img.gz`, and unpacks gzip before the card is
 /// touched: a raw disk takes whole sectors, and a corrupt image is caught first.
 public struct ImagePreparer: Sendable {
+    /// The most a gzip image may unpack to.
+    static let maxImageBytes: UInt64 = 32_000_000_000
     public var cache: URL
     var session: URLSession
 
@@ -87,6 +89,9 @@ public struct ImagePreparer: Sendable {
             fm.createFile(atPath: output.path, contents: nil)
             let out = try FileHandle(forWritingTo: output)
             defer { try? out.close() }
+            // A failed unpack leaves nothing behind in the cache.
+            var finished = false
+            defer { if !finished { try? fm.removeItem(at: output) } }
             var hasher = SHA256()
             var written: UInt64 = 0
             var decoder = GzipDecoder()
@@ -97,12 +102,14 @@ public struct ImagePreparer: Sendable {
                 try decoder.feed(chunk) { piece in
                     hasher.update(bufferPointer: piece)
                     written += UInt64(piece.count)
+                    guard written <= Self.maxImageBytes else { throw FlashError.image("The image unpacks to more than 32 GB, larger than any R36S card image") }
                     try out.write(contentsOf: Data(piece))
                 }
                 progress(.unpacking, consumed, total)
             }
             try decoder.finish()
             guard written > 0 else { throw FlashError.image("The image is empty") }
+            finished = true
             return PreparedImage(url: output, size: written, sha256: hasher.finalize().hex, isGizletR36S: Self.looksLikeR36S(output), releaseTag: nil)
         }.value
     }
