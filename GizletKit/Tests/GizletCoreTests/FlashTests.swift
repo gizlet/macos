@@ -114,6 +114,30 @@ import Testing
 }
 
 @Suite struct PanelSelectionTests {
+    @Test func refusesSymlinksInTheBootVolume() throws {
+        let boot = try temporaryDirectory()
+        let outside = try temporaryDirectory().appendingPathComponent("outside.dtbo")
+        let original = Data("outside the card".utf8)
+        try original.write(to: outside)
+        let overlay = boot.appendingPathComponent("r36s-v30-panel4.dtbo")
+        let selected = boot.appendingPathComponent("mipi-panel.dtbo")
+        try FileManager.default.createSymbolicLink(at: overlay, withDestinationURL: outside)
+        #expect(throws: FlashError.self) { try PanelDetector.select(.panel4, onBootVolume: boot) }
+        try FileManager.default.removeItem(at: overlay)
+        try Data("panel 4".utf8).write(to: overlay)
+        try FileManager.default.createSymbolicLink(at: selected, withDestinationURL: outside)
+        #expect(throws: FlashError.self) { try PanelDetector.select(.panel4, onBootVolume: boot) }
+        #expect(try Data(contentsOf: outside) == original)
+    }
+
+    @Test func requiresTheExpectedFATDevice() throws {
+        let boot = try temporaryDirectory()
+        let selected = boot.appendingPathComponent("mipi-panel.dtbo")
+        try Data("existing overlay".utf8).write(to: selected)
+        #expect(throws: FlashError.self) { try PanelDetector.select(.panel0, onBootVolume: boot, device: "disk99s1") }
+        #expect(FileManager.default.fileExists(atPath: selected.path))
+    }
+
     @Test func selectsEachPanelOnTheBootVolume() throws {
         let boot = try temporaryDirectory()
         try Data("panel 4".utf8).write(to: boot.appendingPathComponent("r36s-v30-panel4.dtbo"))
