@@ -204,6 +204,18 @@ public final class FlashModel {
     public func write(confirmed identity: DiskIdentity) async {
         confirming = nil
         guard let image = prepared, !isWriting else { return }
+        // A local image may have been replaced since it was checked: check it again before the card is touched.
+        step = .preparing(.verifying, nil)
+        let unchanged = await Task.detached(priority: .userInitiated) {
+            (try? FileManager.default.attributesOfItem(atPath: image.url.path)[.size] as? UInt64) == image.size
+                && (try? sha256(of: image.url)) == image.sha256
+        }.value
+        guard unchanged else {
+            prepared = nil
+            step = .failed(app.l("The image file changed since it was checked; nothing was written. Write again to check it anew.",
+                                 "镜像文件在校验之后发生了变化，没有写入任何内容。请重新写入，以便再次校验。"))
+            return
+        }
         let panel = effectivePanel
         let bsdName = identity.bsdName
         step = .authorizing

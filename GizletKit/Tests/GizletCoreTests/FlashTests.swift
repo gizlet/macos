@@ -184,6 +184,24 @@ import Testing
         #expect(written[padEnd] == 0xEE)
     }
 
+    @Test func refusesAnImageThatChangedSinceItWasChecked() throws {
+        let directory = try temporaryDirectory()
+        let checked = Data(repeating: 1, count: 1 << 20)
+        let imageURL = try write(checked, to: directory, name: "card.img")
+        let image = PreparedImage(url: imageURL, size: UInt64(checked.count), sha256: sha256(of: checked), isGizletR36S: false, releaseTag: nil)
+        let card = directory.appendingPathComponent("card")
+        try Data(count: 4 << 20).write(to: card)
+        let descriptor = open(card.path, O_RDWR)
+        defer { close(descriptor) }
+        // A larger file put in its place: refused before anything is written.
+        try Data(repeating: 2, count: 2 << 20).write(to: imageURL)
+        #expect(throws: FlashError.self) { try CardWriter().write(image, to: descriptor, blockSize: 512, capacity: 4 << 20) { _, _, _ in } }
+        #expect(try Data(contentsOf: card) == Data(count: 4 << 20))
+        // Other bytes of the same size: the write fails instead of reporting success.
+        try Data(repeating: 3, count: 1 << 20).write(to: imageURL)
+        #expect(throws: FlashError.self) { try CardWriter().write(image, to: descriptor, blockSize: 512, capacity: 4 << 20) { _, _, _ in } }
+    }
+
     @Test func refusesASmallCard() throws {
         let directory = try temporaryDirectory()
         let imageURL = try write(Data(count: 4096), to: directory, name: "card.img")

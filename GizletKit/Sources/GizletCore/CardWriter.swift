@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum WritePhase: Equatable, Sendable {
@@ -34,6 +35,10 @@ public final class CardWriter: @unchecked Sendable {
         let padded = (image.size + UInt64(blockSize) - 1) / UInt64(blockSize) * UInt64(blockSize)
         guard padded <= capacity else { throw FlashError.write("The card is smaller than the image") }
         _ = fcntl(descriptor, F_NOCACHE, 1)
+        // The image file must still be the one checked: its bytes are hashed as they are written.
+        let current = (try? FileManager.default.attributesOfItem(atPath: image.url.path)[.size] as? UInt64) ?? 0
+        guard current == image.size else { throw FlashError.image("The image file changed since it was checked; nothing was written") }
+        var hasher = SHA256()
         let source = try FileHandle(forReadingFrom: image.url)
         defer { try? source.close() }
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: Self.chunk, alignment: 4096)
@@ -47,11 +52,15 @@ public final class CardWriter: @unchecked Sendable {
         while offset < image.size {
             if isCancelled { throw FlashError.cancelled }
             let length = try fill(buffer, from: source, at: offset, size: image.size)
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: length))
             let rounded = (length + blockSize - 1) / blockSize * blockSize
             if rounded > length { buffer.advanced(by: length).initializeMemory(as: UInt8.self, repeating: 0, count: rounded - length) }
             try transfer(rounded, at: offset) { pwrite(descriptor, buffer.advanced(by: $0), $1, off_t($2)) }
             offset += UInt64(length)
             progress(.writing, offset, image.size)
+        }
+        guard hasher.finalize().hex == image.sha256 else {
+            throw FlashError.verify("The image file changed while it was written; the card is incomplete. Write it again.")
         }
         guard fsync(descriptor) == 0 else { throw FlashError.write("The card did not finish writing (\(String(cString: strerror(errno))))") }
         _ = ioctl(descriptor, 0x2000_6416)  // DKIOCSYNCHRONIZE: flush the reader's own cache.

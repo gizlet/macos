@@ -145,16 +145,42 @@ final class StubProtocol: URLProtocol {
         var headers: [String: String] = [:]
     }
 
-    nonisolated(unsafe) static var responses: [String: Response] = [:]
-    nonisolated(unsafe) static var requests: [URLRequest] = []
-    /// Runs before the answer to a URL is sent, as something happening during a download.
-    nonisolated(unsafe) static var onLoad: [String: () -> Void] = [:]
+    // Suites run in parallel and share these: every read and change holds the lock.
+    nonisolated(unsafe) private static var storedResponses: [String: Response] = [:]
+    nonisolated(unsafe) private static var storedRequests: [URLRequest] = []
+    nonisolated(unsafe) private static var storedOnLoad: [String: () -> Void] = [:]
     static let lock = NSLock()
 
+    static var responses: [String: Response] {
+        get { lock.withLock { storedResponses } }
+        _modify {
+            lock.lock()
+            defer { lock.unlock() }
+            yield &storedResponses
+        }
+    }
+
+    static var requests: [URLRequest] {
+        get { lock.withLock { storedRequests } }
+        _modify {
+            lock.lock()
+            defer { lock.unlock() }
+            yield &storedRequests
+        }
+    }
+
+    /// Runs before the answer to a URL is sent, as something happening during a download.
+    static var onLoad: [String: () -> Void] {
+        get { lock.withLock { storedOnLoad } }
+        _modify {
+            lock.lock()
+            defer { lock.unlock() }
+            yield &storedOnLoad
+        }
+    }
+
     static func session(_ responses: [String: Response]) -> URLSession {
-        lock.lock()
         self.responses.merge(responses) { $1 }
-        lock.unlock()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubProtocol.self]
         return URLSession(configuration: configuration)
@@ -164,12 +190,11 @@ final class StubProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.lock.lock()
-        Self.requests.append(request)
         let key = request.url!.absoluteString
-        let stub = Self.responses[key] ?? Self.responses[key.components(separatedBy: "?")[0]]
-        let hook = Self.onLoad.removeValue(forKey: key)
-        Self.lock.unlock()
+        let (stub, hook) = Self.lock.withLock { () -> (Response?, (() -> Void)?) in
+            Self.storedRequests.append(request)
+            return (Self.storedResponses[key] ?? Self.storedResponses[key.components(separatedBy: "?")[0]], Self.storedOnLoad.removeValue(forKey: key))
+        }
         hook?()
         guard let stub else {
             client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
