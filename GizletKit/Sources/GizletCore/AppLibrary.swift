@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// An installed app.
@@ -7,9 +8,40 @@ public struct InstalledApp: Identifiable, Equatable, Sendable {
     public var directory: URL
     public var manifest: Manifest
     public var installedAt: Date
+    let originRecord: AppOriginRecord
 
     public var entry: URL { directory.appendingPathComponent(manifest.entry) }
     public var icon: URL? { manifest.icon.map { directory.appendingPathComponent($0) } }
+}
+
+enum AppOriginRecord: Equatable, Sendable {
+    case legacy
+    case recorded(StoreOrigin?)
+
+    private static let attribute = "io.gizlet.store-origin"
+    private static let sizeLimit = 64 << 10
+
+    static func read(from directory: URL) -> AppOriginRecord {
+        let count = getxattr(directory.path, attribute, nil, 0, 0, XATTR_NOFOLLOW)
+        if count == -1 && errno == ENOATTR { return .legacy }
+        guard count > 0, count <= sizeLimit else { return .recorded(nil) }
+        var data = Data(count: count)
+        let read = data.withUnsafeMutableBytes { buffer in
+            getxattr(directory.path, attribute, buffer.baseAddress, buffer.count, 0, XATTR_NOFOLLOW)
+        }
+        guard read == count else { return .recorded(nil) }
+        return .recorded(try? JSONDecoder().decode(StoreOrigin.self, from: data))
+    }
+
+    static func write(_ origin: StoreOrigin?, to directory: URL) throws {
+        let data = try JSONEncoder().encode(origin)
+        guard data.count <= sizeLimit else { throw PackageError.invalid("the app source record is too large") }
+        try data.withUnsafeBytes { buffer in
+            guard setxattr(directory.path, attribute, buffer.baseAddress, buffer.count, 0, XATTR_NOFOLLOW) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+    }
 }
 
 /// The apps installed under `device/packages/apps`, shared by every profile.
@@ -49,7 +81,7 @@ public final class AppLibrary: @unchecked Sendable {
             return nil
         }
         let date = (try? manifestURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-        return InstalledApp(directory: directory, manifest: manifest, installedAt: date)
+        return InstalledApp(directory: directory, manifest: manifest, installedAt: date, originRecord: AppOriginRecord.read(from: directory))
     }
 
     /// Reads a package's manifest without unpacking it.
@@ -77,6 +109,10 @@ public final class AppLibrary: @unchecked Sendable {
     /// that is open.
     @discardableResult
     public func install(_ package: URL, expectedID: String? = nil, isRunning: (String) -> Bool = { _ in false }) throws -> InstalledApp {
+        try install(package, expectedID: expectedID, origin: nil, isRunning: isRunning)
+    }
+
+    func install(_ package: URL, expectedID: String?, origin: StoreOrigin?, isRunning: (String) -> Bool) throws -> InstalledApp {
         lock.lock()
         defer { lock.unlock() }
         let fm = FileManager.default
@@ -100,6 +136,7 @@ public final class AppLibrary: @unchecked Sendable {
             throw PackageError.unsupported("\(manifest.entry) is not a macOS executable")
         }
         if isRunning(manifest.id) { throw PackageError.running(manifest.id) }
+        try AppOriginRecord.write(origin, to: staging)
 
         let destination = root.apps.appendingPathComponent(manifest.id, isDirectory: true)
         if fm.fileExists(atPath: destination.path) {

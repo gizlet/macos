@@ -59,7 +59,7 @@ cd .. && scripts/dev-app.sh --open    # build/dev/Gizlet Dev.app
 | Path | Holds |
 | --- | --- |
 | `device/packages/apps/<id>/` | An installed package, shared by every profile |
-| `device/store/origins.json` | Which Store repository, and GitHub repository id, each app came from; only that repository updates it |
+| `device/packages/apps/<id>/` extended attribute `io.gizlet.store-origin` | The source repository and GitHub repository id used to match Store updates. Older installs fall back to `device/store/origins.json`. |
 | `device/current-profile` | The profile in use |
 | `device/launcher/updates/` | Launcher updates being verified |
 | `profiles/<id>/profile.ini` | A profile's name |

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import GizletCore
 import Testing
@@ -44,6 +45,44 @@ import Testing
             try await store.install(repo: "github.com/evil/hello", isRunning: { _ in false }, progress: { _, _ in })
         }
         #expect(store.library.app("dev.example.hello")?.manifest.version == "1.0.0")
+    }
+
+    @Test func rejectedOriginDoesNotReplaceInstalledPackage() throws {
+        let directory = try temporaryDirectory()
+        let store = installer(directory, [:])
+        let id = "dev.example.hello"
+        let firstPackage = try write(makePackage(), to: directory, name: "first.gzl")
+        let firstOrigin = StoreOrigin(repo: "github.com/dev/hello", repositoryID: 7, version: "1.0.0",
+                                      tag: "v1.0.0", sha256: try sha256(of: firstPackage))
+        _ = try store.library.install(firstPackage, expectedID: id, origin: firstOrigin, isRunning: { _ in false })
+        let replacement = try write(makePackage(manifest: manifestJSON(version: "2.0.0")), to: directory, name: "replacement.gzl")
+        var invalidOrigin = firstOrigin
+        invalidOrigin.tag = String(repeating: "a", count: 65_537)
+        #expect(throws: PackageError.invalid("the app source record is too large")) {
+            try store.library.install(replacement, expectedID: id, origin: invalidOrigin, isRunning: { _ in false })
+        }
+        let reopened = installer(directory, [:])
+        #expect(reopened.library.app(id)?.manifest.version == "1.0.0")
+        #expect(reopened.origin(for: id) == firstOrigin)
+    }
+
+    @Test func localReplacementIgnoresLegacyStoreOrigin() throws {
+        let directory = try temporaryDirectory()
+        let store = installer(directory, [:])
+        let firstPackage = try write(makePackage(), to: directory, name: "first.gzl")
+        let first = try store.library.install(firstPackage)
+        let legacyOrigin = StoreOrigin(repo: "github.com/dev/hello", repositoryID: 7, version: "1.0.0",
+                                       tag: "v1.0.0", sha256: try sha256(of: firstPackage))
+        let legacyFile = store.library.root.store.appendingPathComponent("origins.json")
+        try writeAtomically(JSONEncoder().encode([first.id: legacyOrigin]), to: legacyFile)
+        try #require(removexattr(first.directory.path, "io.gizlet.store-origin", XATTR_NOFOLLOW) == 0)
+        #expect(store.origin(for: first.id) == legacyOrigin)
+        let replacement = try write(makePackage(manifest: manifestJSON(version: "2.0.0")), to: directory, name: "replacement.gzl")
+        try store.installFile(replacement, isRunning: { _ in false })
+        let reopened = installer(directory, [:])
+        #expect(reopened.library.app(first.id)?.manifest.version == "2.0.0")
+        #expect(reopened.origin(for: first.id) == nil)
+        #expect(FileManager.default.fileExists(atPath: legacyFile.path))
     }
 
     @Test func refusesARepositoryReplacedAtTheSamePath() async throws {

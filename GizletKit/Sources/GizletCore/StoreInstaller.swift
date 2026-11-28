@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where an installed app came from, in `device/store/origins.json`.
+/// Where an installed app came from.
 public struct StoreOrigin: Codable, Equatable, Sendable {
     public var repo: String
     public var repositoryID: UInt64?
@@ -50,7 +50,6 @@ public final class StoreInstaller: @unchecked Sendable {
     public let library: AppLibrary
     public let client: StoreClient
     let downloader: Downloader
-    private let lock = NSLock()
     /// Held while what is installed, and where it came from, changes.
     private let commitLock = NSLock()
 
@@ -60,22 +59,31 @@ public final class StoreInstaller: @unchecked Sendable {
         self.downloader = downloader
     }
 
-    var originsFile: URL { library.root.store.appendingPathComponent("origins.json") }
     var downloads: URL { library.root.store.appendingPathComponent("downloads", isDirectory: true) }
 
     public func origins() -> [String: StoreOrigin] {
-        guard let data = try? Data(contentsOf: originsFile) else { return [:] }
+        let legacy = legacyOrigins()
+        return Dictionary(uniqueKeysWithValues: library.list().compactMap { app in
+            origin(for: app, legacy: legacy).map { (app.id, $0) }
+        })
+    }
+
+    public func origin(for id: String) -> StoreOrigin? {
+        guard let app = library.app(id) else { return nil }
+        return origin(for: app)
+    }
+
+    private func legacyOrigins() -> [String: StoreOrigin] {
+        let file = library.root.store.appendingPathComponent("origins.json")
+        guard let data = try? Data(contentsOf: file) else { return [:] }
         return (try? JSONDecoder().decode([String: StoreOrigin].self, from: data)) ?? [:]
     }
 
-    func setOrigin(_ id: String, _ origin: StoreOrigin?) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        var all = origins()
-        all[id] = origin
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try writeAtomically(encoder.encode(all), to: originsFile)
+    private func origin(for app: InstalledApp, legacy: [String: StoreOrigin]? = nil) -> StoreOrigin? {
+        switch app.originRecord {
+        case .legacy: (legacy ?? legacyOrigins())[app.id]
+        case .recorded(let origin): origin
+        }
     }
 
     /// Installs the app a repository offers for this Mac.
@@ -93,7 +101,7 @@ public final class StoreInstaller: @unchecked Sendable {
     public func upgrade(_ update: StoreUpdateStatus, isRunning: @escaping (String) -> Bool,
                         progress: @escaping @Sendable (UInt64, UInt64?) -> Void) async throws -> InstalledApp {
         guard let package = update.package, let version = update.version, let tag = update.tag else { throw StoreInstallError.badPackage }
-        let repositoryID = update.repositoryID ?? origins()[update.appID]?.repositoryID
+        let repositoryID = update.repositoryID ?? origin(for: update.appID)?.repositoryID
         return try await install(repo: update.repo, repositoryID: repositoryID, id: update.appID, kind: update.kind ?? "app",
                                  version: version, tag: tag, package: package, replaces: update.installed,
                                  isRunning: isRunning, progress: progress)
@@ -104,7 +112,9 @@ public final class StoreInstaller: @unchecked Sendable {
                          progress: @escaping @Sendable (UInt64, UInt64?) -> Void) async throws -> InstalledApp {
         guard isValidAppID(id) else { throw StoreInstallError.badPackage }
         guard kind == "app" else { throw PackageError.unsupported("Services run on Gizlet OS handhelds, not on a Mac") }
-        try checkSource(repo: repo, repositoryID: repositoryID, id: id, replaces: replaces)
+        try commitLock.withLock {
+            try checkSource(repo: repo, repositoryID: repositoryID, id: id, replaces: replaces)
+        }
         guard let url = package.url, let sha256 = package.sha256, let size = package.size else { throw StoreInstallError.notReady }
         guard isSHA256Hex(sha256), size > 0, size <= Self.packageLimit, url.scheme == "https" || url.host == "localhost" else {
             throw StoreInstallError.badPackage
@@ -122,9 +132,7 @@ public final class StoreInstaller: @unchecked Sendable {
         commitLock.lock()
         defer { commitLock.unlock() }
         try checkSource(repo: origin.repo, repositoryID: origin.repositoryID, id: id, replaces: replaces)
-        let installed = try library.install(file, expectedID: id, isRunning: isRunning)
-        try setOrigin(id, origin)
-        return installed
+        return try library.install(file, expectedID: id, origin: origin, isRunning: isRunning)
     }
 
     /// Fails unless the repository may install `id` now: an installed app is only
@@ -133,8 +141,8 @@ public final class StoreInstaller: @unchecked Sendable {
     private func checkSource(repo: String, repositoryID: UInt64?, id: String, replaces: String?) throws {
         let current = library.app(id)
         if let replaces, current?.manifest.version != replaces { throw StoreInstallError.changedWhileWaiting(id) }
-        guard current != nil else { return }
-        switch origins()[id] {
+        guard let current else { return }
+        switch origin(for: current) {
         case .some(let origin) where origin.repo != repo:
             throw StoreInstallError.otherSource(id: id, from: origin.repo)
         case .some(let origin) where origin.repositoryID != nil && origin.repositoryID != repositoryID:
@@ -151,24 +159,23 @@ public final class StoreInstaller: @unchecked Sendable {
     public func installFile(_ file: URL, isRunning: (String) -> Bool) throws -> InstalledApp {
         commitLock.lock()
         defer { commitLock.unlock() }
-        let installed = try library.install(file, isRunning: isRunning)
-        try setOrigin(installed.id, nil)
-        return installed
+        return try library.install(file, isRunning: isRunning)
     }
 
     public func uninstall(_ id: String, isRunning: (String) -> Bool) throws {
         commitLock.lock()
         defer { commitLock.unlock() }
         try library.uninstall(id, isRunning: isRunning)
-        try setOrigin(id, nil)
     }
 
     /// Update statuses for the installed apps that came from the Store.
     public func updates() async throws -> [StoreUpdateStatus] {
-        let origins = origins()
-        let installed = library.list().compactMap { app -> StoreClient.InstalledItem? in
-            guard let origin = origins[app.id] else { return nil }
-            return StoreClient.InstalledItem(repo: origin.repo, repositoryID: origin.repositoryID, id: app.id, version: app.manifest.version)
+        let installed = commitLock.withLock {
+            let legacy = legacyOrigins()
+            return library.list().compactMap { app -> StoreClient.InstalledItem? in
+                guard let origin = origin(for: app, legacy: legacy) else { return nil }
+                return StoreClient.InstalledItem(repo: origin.repo, repositoryID: origin.repositoryID, id: app.id, version: app.manifest.version)
+            }
         }
         return try await client.updates(installed)
     }

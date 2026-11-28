@@ -216,7 +216,7 @@ public final class AppModel {
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         do {
             let manifest = try library.peek(url)
-            if let installed = library.app(manifest.id), let origin = store.origins()[manifest.id] {
+            if let installed = library.app(manifest.id), let origin = store.origin(for: manifest.id) {
                 _ = installed
                 notice = Notice(title: l("Installed from a file", "已从文件安装"),
                                 message: l("\(manifest.name) was from \(origin.repo); it will no longer get Store updates.",
@@ -242,7 +242,7 @@ public final class AppModel {
         }
     }
 
-    public func origin(of id: String) -> StoreOrigin? { store.origins()[id] }
+    public func origin(of id: String) -> StoreOrigin? { store.origin(for: id) }
 
     public func checkAppUpdates() async {
         do {
