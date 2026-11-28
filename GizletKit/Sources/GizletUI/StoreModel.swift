@@ -85,6 +85,8 @@ public final class StoreModel {
             return
         }
         path = []
+        // Results belong to the words they were found for.
+        results = nil
         searchTask = Task {
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }

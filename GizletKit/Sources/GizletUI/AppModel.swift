@@ -39,7 +39,6 @@ public final class AppModel {
     /// The apps running now, from this run of the Launcher or an earlier one.
     public private(set) var runningIDs: Set<String> = []
     let runningApps: RunningApps
-    private var processes: [String: Process] = [:]
     private var runningWatch: Timer?
     public private(set) var appUpdates: [String: StoreUpdateStatus] = [:]
     public private(set) var busyApps: Set<String> = []
@@ -170,9 +169,6 @@ public final class AppModel {
         let saves = profileStore.saveDirectory(for: app.id)
         do {
             try FileManager.default.createDirectory(at: saves, withIntermediateDirectories: true)
-            let process = Process()
-            process.executableURL = app.entry
-            process.currentDirectoryURL = app.directory
             var environment = ProcessInfo.processInfo.environment
             environment["GIZLET_APP_ID"] = app.id
             environment["GIZLET_APP_DIR"] = app.directory.path
@@ -181,23 +177,11 @@ public final class AppModel {
             environment["GIZLET_SWAP_AB"] = "0"
             environment["GIZLET_PROFILE_ID"] = profile.id
             for key in ["GIZLET_PREFIX", "GIZLET_STORE_API", "GIZLET_UPDATE_FEED", "GIZLET_PAGE"] { environment.removeValue(forKey: key) }
-            process.environment = environment
-            process.standardInput = FileHandle.nullDevice
-            let id = app.id
-            process.terminationHandler = { [weak self] ended in
-                let pid = ended.processIdentifier
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.runningApps.ended(id, pid: pid)
-                    self.processes.removeValue(forKey: id)
-                    self.refreshRunning()
-                }
-            }
+            // Its own process group, so Quit ends what it starts too; the running
+            // list notices the group ending on its next look.
             try runningApps.launch(app.id, profile: profile.id) {
-                try process.run()
-                return process.processIdentifier
+                try ProcessGroup.spawn(app.entry, environment: environment, directory: app.directory)
             }
-            processes[app.id] = process
             refreshRunning()
             try? profileStore.markPlayed(app.id)
         } catch {

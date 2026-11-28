@@ -13,12 +13,12 @@ import Testing
     @Test func tracksAppsAcrossLauncherRuns() throws {
         let root = DataRoot(url: try temporaryDirectory())
         let apps = RunningApps(root: root)
-        let process = try sleeper(30)
+        var pid: Int32 = 0
         try apps.launch("dev.example.a", profile: "0123456789abcdef") {
-            try process.run()
-            return process.processIdentifier
+            pid = try ProcessGroup.spawn(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], environment: [:], directory: URL(fileURLWithPath: "/"))
+            return pid
         }
-        defer { process.terminate() }
+        defer { kill(-pid, SIGKILL) }
         #expect(apps.isRunning("dev.example.a"))
         #expect(throws: RunningApps.Refusal.running("dev.example.a")) { try apps.launch("dev.example.a", profile: "x") { 0 } }
         #expect(throws: RunningApps.Refusal.running("dev.example.a")) { try apps.reserve("dev.example.a") }
@@ -29,9 +29,36 @@ import Testing
         #expect(reopened.running.first?.profile == "0123456789abcdef")
 
         reopened.stop("dev.example.a", grace: 1)
-        process.waitUntilExit()
+        for _ in 0..<40 where reopened.isRunning("dev.example.a") { Thread.sleep(forTimeInterval: 0.1) }
         #expect(!reopened.isRunning("dev.example.a"))
         #expect(RunningApps(root: root).running.isEmpty)
+    }
+
+    @Test func tracksAndStopsWhatAScriptEntryStarts() throws {
+        let directory = try temporaryDirectory()
+        let apps = RunningApps(root: DataRoot(url: directory))
+        let marker = directory.appendingPathComponent("child.pid")
+        let script = directory.appendingPathComponent("entry")
+        // A script entry that starts its game in the background and exits at once.
+        try Data("#!/bin/sh\nsleep 60 &\necho $! > \"$1\"\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        try apps.launch("dev.example.script", profile: "x") {
+            try ProcessGroup.spawn(script, arguments: [marker.path], environment: ["PATH": "/usr/bin:/bin"], directory: directory)
+        }
+        var child: Int32 = 0
+        for _ in 0..<50 where child == 0 {
+            Thread.sleep(forTimeInterval: 0.1)
+            child = Int32((try? String(contentsOf: marker, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+        }
+        #expect(child > 0)
+        Thread.sleep(forTimeInterval: 0.3)
+        // The entry has exited; its game keeps the app running.
+        #expect(apps.isRunning("dev.example.script"))
+        #expect(throws: RunningApps.Refusal.running("dev.example.script")) { try apps.reserve("dev.example.script") }
+        apps.stop("dev.example.script", grace: 1)
+        for _ in 0..<40 where apps.isRunning("dev.example.script") { Thread.sleep(forTimeInterval: 0.1) }
+        #expect(!apps.isRunning("dev.example.script"))
+        #expect(kill(child, 0) != 0)
     }
 
     @Test func refusesToLaunchAnAppBeingReplaced() throws {

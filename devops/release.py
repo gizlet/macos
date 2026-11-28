@@ -88,12 +88,41 @@ def assemble(tag, commit, out, archive, dmg, notes, signing_key, allowed_signers
         if signature.exists():
             signature.unlink()
         subprocess.run(["ssh-keygen", "-q", "-Y", "sign", "-f", str(key), "-n", NAMESPACE, str(manifest_path)], check=True)
-    subprocess.run(
-        ["ssh-keygen", "-q", "-Y", "verify", "-f", str(allowed_signers), "-I", "launcher", "-n", NAMESPACE, "-s", str(signature)],
-        input=text.encode(), check=True, stdout=subprocess.DEVNULL,
-    )
-    envelope = {"schema": 1, "manifest": text, "signature": signature.read_text()}
+    verify(text, signature.read_text(), allowed_signers)
+    write_envelope(out, text, signature.read_text())
+    return manifest
+
+
+def verify(text, signature, allowed_signers):
+    """Fails unless signature is the update key's signature of text."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "manifest.json.sig"
+        path.write_text(signature)
+        subprocess.run(
+            ["ssh-keygen", "-q", "-Y", "verify", "-f", str(allowed_signers), "-I", "launcher", "-n", NAMESPACE, "-s", str(path)],
+            input=text.encode(), check=True, stdout=subprocess.DEVNULL,
+        )
+
+
+def write_envelope(out, text, signature):
+    envelope = {"schema": 1, "manifest": text, "signature": signature}
     (out / "latest.json").write_text(json.dumps(envelope, indent=2) + "\n")
+
+
+def published_release(tag, commit, out, site=SITE, allowed_signers=ROOT / "devops/allowed_signers"):
+    """The manifest an earlier run of this release published, checked and made OUT's latest.json.
+
+    A version folder never changes, so a release cut short after uploading it
+    finishes with what it published, not with this run's rebuilt files.
+    """
+    folder = f"{site}/assets/{PREFIX}/releases/{tag}/"
+    text = fetch(folder + "manifest.json").decode()
+    signature = fetch(folder + "manifest.json.sig").decode()
+    verify(text, signature, allowed_signers)
+    manifest = json.loads(text)
+    if manifest.get("tag") != tag or manifest.get("commit") != commit:
+        raise ValueError(f"{tag} is already published from another commit")
+    write_envelope(out, text, signature)
     return manifest
 
 
@@ -172,18 +201,21 @@ def published_version(site=SITE):
         raise
 
 
-def publish(tag, out, manifest, credentials, site=SITE):
+def publish(tag, out, manifest, credentials, site=SITE, allowed_signers=ROOT / "devops/allowed_signers"):
     r2 = R2(credentials)
     folder = f"{PREFIX}/releases/{tag}/"
     if r2.exists(folder + "manifest.json"):
-        raise ValueError(f"{tag} is already published")
-    immutable = "public, max-age=31536000, immutable"
-    for name, content_type in ((manifest["archive"]["path"], "application/zip"),
-                               (manifest["dmg"]["path"], "application/x-apple-diskimage"),
-                               ("manifest.json.sig", "text/plain; charset=utf-8"),
-                               ("latest.json", "application/json")):
-        r2.put(folder + name, out / name, content_type, immutable)
-    r2.put(folder + "manifest.json", out / "manifest.json", "application/json", immutable, only_new=True)
+        # An earlier run uploaded this version and stopped before promoting it.
+        manifest = published_release(tag, manifest["commit"], out, site, allowed_signers)
+        print(f"{tag} is already uploaded; checking and promoting it", flush=True)
+    else:
+        immutable = "public, max-age=31536000, immutable"
+        for name, content_type in ((manifest["archive"]["path"], "application/zip"),
+                                   (manifest["dmg"]["path"], "application/x-apple-diskimage"),
+                                   ("manifest.json.sig", "text/plain; charset=utf-8"),
+                                   ("latest.json", "application/json")):
+            r2.put(folder + name, out / name, content_type, immutable)
+        r2.put(folder + "manifest.json", out / "manifest.json", "application/json", immutable, only_new=True)
 
     for file in (manifest["archive"], manifest["dmg"]):
         wait_for(f"{site}/assets/{folder}{file['path']}", lambda body, file=file: hashlib.sha256(body).hexdigest() == file["sha256"])

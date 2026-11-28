@@ -103,12 +103,13 @@ public final class RunningApps: @unchecked Sendable {
         reserved.remove(id)
     }
 
-    /// Asks a running app to quit, and ends it `grace` seconds later if it has not.
+    /// Asks every process of a running app's group to quit, and ends them
+    /// `grace` seconds later if they have not.
     public func stop(_ id: String, grace: TimeInterval = 3) {
         guard let record = running.first(where: { $0.id == id }) else { return }
-        kill(record.pid, SIGTERM)
+        kill(-record.pid, SIGTERM)
         DispatchQueue.global().asyncAfter(deadline: .now() + grace) { [self] in
-            if running.contains(record) { kill(record.pid, SIGKILL) }
+            if running.contains(record) { kill(-record.pid, SIGKILL) }
         }
     }
 
@@ -125,9 +126,14 @@ public final class RunningApps: @unchecked Sendable {
         try? writeAtomically(encoder.encode(records.values.sorted { $0.id < $1.id }), to: file)
     }
 
+    /// Whether the app's process group still has a process. While its first
+    /// process lives, its start time tells it from a reused process ID; once it
+    /// has ended, the group lives on in what it started. macOS never gives a new
+    /// process the ID of a group that still exists, so the group is the app's.
     static func isAlive(_ record: Record) -> Bool {
-        guard record.pid > 0, kill(record.pid, 0) == 0 || errno == EPERM else { return false }
-        return startTime(of: record.pid) == record.started
+        guard record.pid > 0 else { return false }
+        if let started = startTime(of: record.pid) { return started == record.started }
+        return kill(-record.pid, 0) == 0 || errno == EPERM
     }
 
     /// When process `pid` started, in microseconds since 1970; nil when there is none.
